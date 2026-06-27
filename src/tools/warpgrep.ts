@@ -8,7 +8,7 @@ import type {
   ToolDefinition,
 } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/types";
 import { throwIfAborted, ToolAbortError } from "@oh-my-pi/pi-coding-agent/tools/tool-errors";
-import { MORPH_API_KEY } from "../config.js";
+import { MORPH_API_KEY, MORPH_WARPGREP_ENABLED } from "../config.js";
 import { textToolResult } from "../compaction.js";
 import {
   fetchGitHubRepoSuggestions,
@@ -20,6 +20,7 @@ import {
 import { formatWarpGrepResult } from "../format.js";
 import { warpGrep } from "../morph-clients.js";
 import { withToolNote } from "../routing.js";
+import { raceAbort } from "../abort.js";
 
 const CODEBASE_DESCRIPTION = `Fast agentic codebase search. Uses ripgrep, file reading, and directory listing across multiple turns to find relevant code contexts.
 
@@ -37,38 +38,11 @@ Use this when:
 - Docs URLs are failing or returning 404s — search the source instead
 - User asks about a framework or tool they didn't provide a repo for — infer the canonical GitHub repo from the matching ecosystem (npm, crates.io, PyPI, pkg.go.dev, etc.) before guessing owner/repo variants
 
-This tool is for public remote repos. For the current checked-out workspace, use warpgrep_codebase_search instead.
+This tool is for public remote repos.
 
 Provide exactly one repository locator:
 - owner_repo: "owner/repo"
 - github_url: "https://github.com/owner/repo"`;
-
-// Reject as soon as `signal` aborts instead of waiting for an in-flight SDK or
-// network promise to settle, so a cancelled tool releases the harness promptly.
-// The underlying promise is still awaited (its rejection handled) to avoid an
-// unhandled rejection once it eventually settles in the background.
-function raceAbort<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
-  if (!signal) return promise;
-  const abortError = () => {
-    const reason = signal.reason instanceof Error ? signal.reason : undefined;
-    return reason instanceof ToolAbortError ? reason : new ToolAbortError();
-  };
-  if (signal.aborted) return Promise.reject(abortError());
-  return new Promise<T>((resolve, reject) => {
-    const onAbort = () => reject(abortError());
-    signal.addEventListener("abort", onAbort, { once: true });
-    promise.then(
-      (value) => {
-        signal.removeEventListener("abort", onAbort);
-        resolve(value);
-      },
-      (error) => {
-        signal.removeEventListener("abort", onAbort);
-        reject(error);
-      },
-    );
-  });
-}
 
 export function makeWarpgrepCodebase(pi: ExtensionAPI) {
   const { z } = pi.zod;
@@ -79,9 +53,9 @@ export function makeWarpgrepCodebase(pi: ExtensionAPI) {
   });
 
   return {
-    name: "warpgrep_codebase_search",
-    label: "WarpGrep Codebase Search",
-    description: withToolNote(DESCRIPTION_OVERRIDE.CODEBASE, "warpgrep_codebase_search"),
+    name: "codebase_warpsearch",
+    label: "Codebase Warpsearch",
+    description: withToolNote(DESCRIPTION_OVERRIDE.CODEBASE, "codebase_warpsearch"),
     parameters,
     approval: "read",
     async execute(
@@ -94,7 +68,7 @@ export function makeWarpgrepCodebase(pi: ExtensionAPI) {
       if (!MORPH_API_KEY || !warpGrep) {
         return textToolResult(`Error: MORPH_API_KEY not configured.
 
-To use warpgrep_codebase_search, set the MORPH_API_KEY environment variable.
+To use codebase_warpsearch, set the MORPH_API_KEY environment variable.
 Get your API key at: https://morphllm.com/dashboard/api-keys`);
       }
 
@@ -187,10 +161,14 @@ export function makeWarpgrepGithub(pi: ExtensionAPI) {
     ),
   });
 
+  const workspaceRedirect = MORPH_WARPGREP_ENABLED
+    ? "\n\nFor the current checked-out workspace, use codebase_warpsearch instead."
+    : "";
+
   return {
-    name: "warpgrep_github_search",
-    label: "WarpGrep GitHub Search",
-    description: withToolNote(GITHUB_DESCRIPTION, "warpgrep_github_search"),
+    name: "github_warpsearch",
+    label: "GitHub Warpsearch",
+    description: withToolNote(GITHUB_DESCRIPTION + workspaceRedirect, "github_warpsearch"),
     parameters,
     approval: "read",
     async execute(
@@ -203,7 +181,7 @@ export function makeWarpgrepGithub(pi: ExtensionAPI) {
       if (!MORPH_API_KEY || !warpGrep) {
         return textToolResult(`Error: MORPH_API_KEY not configured.
 
-To use warpgrep_github_search, set the MORPH_API_KEY environment variable.
+To use github_warpsearch, set the MORPH_API_KEY environment variable.
 Get your API key at: https://morphllm.com/dashboard/api-keys`);
       }
 

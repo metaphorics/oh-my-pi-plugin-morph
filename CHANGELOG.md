@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-06-27
+
 ### Added
 
 - Added a `fastcompact` tool that compacts supplied file or `artifact://<id>` locations with Morph Compact and returns text only, without writing to disk or mutating session history.

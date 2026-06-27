@@ -1,0 +1,30 @@
+# AGENTS.md
+
+## Release discipline
+
+- Rule: Any shipped update must bump `package.json` `version` and `src/config.ts` `PLUGIN_VERSION` together, then cut `CHANGELOG.md` from `[Unreleased]` to a dated heading for the same version before commit or push.
+- Why: `package.json` is the package metadata, `src/config.ts` exports a runtime plugin version constant, and `CHANGELOG.md` declares Keep a Changelog plus Semantic Versioning as the release contract.
+
+## Routing and compaction contracts
+
+- Rule: If `MORPH_API_KEY` is absent, routing hints and runtime notes must say Morph tools are unavailable and route agents to native edit/write/search. Only configured-key guidance may prefer Morph-backed tools.
+- Why: `README.md` documents tools staying registered without a key, but unavailable tools should not be recommended at runtime.
+
+- Rule: Keep the native floor when strengthening Morph prompts: native `edit` for trivial exact replacements, native `write` for new files, and native search for exact symbol or string lookups.
+- Why: The routing policy and tool docs intentionally prefer Morph where it fits without wasting remote calls on cheap local operations.
+
+- Rule: Do not make Morph own every compaction path. Auto compaction defaults to Morph, plain manual `/compact` needs `MORPH_COMPACT_MANUAL=true`, active `snapcompact` wins unless `MORPH_COMPACT_OVERRIDE_SNAPCOMPACT=true`, and `/morph-compact` always forces Morph for that invocation.
+- Why: omp's native summarizer and `snapcompact` remain valid host strategies; the Morph bridge returns `undefined` for fallback cases.
+
+## Extension lifecycle state
+
+- Rule: Session mutable state belongs inside `morphPlugin(pi)`, not module scope.
+- Why: omp invokes the extension factory separately per session and subagent; closure state prevents one session's auto-compaction counter or forced-compaction flag from leaking into another.
+
+## Verification gates
+
+- Rule: For code changes, run `bun run typecheck` and `bun test ./test`. There is no repo lint script in `package.json`.
+- Why: These are the repo-native gates exposed by package scripts; inventing a lint command creates false process.
+
+- Rule: For markdown changes under `docs`, run `omp ttsr scan --json docs`. For root docs like `README.md` or `CHANGELOG.md`, use a repo-root scan filtered for `md-ai-formatting-tells` rather than trusting direct single-file scans.
+- Why: Direct single-file TTSR scans for root markdown have selected zero files in this repo; the filtered root scan catches the formatting rule that has blocked markdown edits before.

@@ -55,6 +55,8 @@ All configuration is via environment variables.
 | `MORPH_FASTCOMPACT` | `true` | Set `false` to disable the `fastcompact` tool. |
 | `MORPH_ROUTING_HINT` | `true` | Set `false` to skip per-turn tool-selection system hints. |
 | `MORPH_COMPACT_RATIO` | `0.3` | Target fraction to keep for Morph compaction. Valid range: `0.05` to `1`. |
+| `MORPH_COMPACT_MANUAL` | `false` | Set `true` to let plain manual `/compact` use Morph. By default manual `/compact` stays on omp's native compaction path. |
+| `MORPH_COMPACT_OVERRIDE_SNAPCOMPACT` | `false` | Set `true` to let Morph override an active `snapcompact` strategy. By default Morph yields to snapcompact. |
 
 ## Tools
 
@@ -91,15 +93,24 @@ Approval tier: `read`.
 
 ## Compaction
 
-When omp starts native compaction, this extension handles `session_before_compact`, serializes the messages selected for summarization, calls Morph Compact with `preserveRecent: 0`, and returns a `CompactionResult` containing Morph's summary. If Morph is unavailable, the selected history is empty, or the API errors, the handler returns `undefined` so omp falls back to its native summarizer.
+This extension hooks omp's `session_before_compact` event, but it does not replace every compaction mode unconditionally.
 
-Manual trigger:
+- Automatic context compaction uses Morph Compact by default when `MORPH_COMPACT` is enabled and Morph is configured.
+- Plain manual `/compact` uses Morph only when `MORPH_COMPACT_MANUAL=true`; otherwise it stays on omp's native compaction path.
+- If the active omp compaction strategy is `snapcompact`, Morph yields to snapcompact by default. Set `MORPH_COMPACT_OVERRIDE_SNAPCOMPACT=true` to let Morph take precedence.
+- `/morph-compact` always forces Morph for that invocation, including when manual `/compact` is not opted in or the active strategy is `snapcompact`.
+
+Behavior change: older plugin builds substituted Morph for plain manual `/compact` by default. Existing users who relied on that behavior must now set `MORPH_COMPACT_MANUAL=true` or use `/morph-compact`.
+
+If Morph is unavailable, the selected history is empty, the request includes custom focus instructions, or the API errors, the handler returns `undefined` so omp falls back to its native summarizer.
+
+Manual Morph trigger:
 
 ```text
 /morph-compact
 ```
 
-The command calls `ctx.compact()`; the Morph bridge runs if enabled.
+The command calls `ctx.compact()` with a per-invocation force flag so the Morph bridge runs when enabled.
 
 `fastcompact` is a separate tool, not part of this hook. The `session_before_compact` hook and `/morph-compact` command compact conversation history; `fastcompact` compacts a supplied file or artifact location and returns text without touching the session.
 

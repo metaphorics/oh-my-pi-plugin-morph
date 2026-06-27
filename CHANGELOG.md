@@ -12,10 +12,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added a `fastcompact` tool that compacts supplied file or `artifact://<id>` locations with Morph Compact and returns text only, without writing to disk or mutating session history.
 - Added the `MORPH_FASTCOMPACT` environment variable to toggle the `fastcompact` tool.
 - Documented recommended agent manifest allowlists: write-capable agents get all Morph tools; read-only agents get the WarpGrep search tools only.
+- Added the `MORPH_COMPACT_MANUAL` environment variable to opt plain manual `/compact` into Morph compaction (default off).
+- Added the `MORPH_COMPACT_OVERRIDE_SNAPCOMPACT` environment variable to let Morph override an active `snapcompact` strategy (default off).
 
 ### Changed
 
 - Renamed the Morph extension tools to `fast_edit`, `codebase_warpsearch`, and `github_warpsearch`. The previous names `morph_edit`, `warpgrep_codebase_search`, and `warpgrep_github_search` are no longer registered.
+- Changed Morph session compaction to gate by trigger instead of running on every compaction: automatic compaction still defaults to Morph, plain manual `/compact` now uses Morph only when `MORPH_COMPACT_MANUAL=true`, Morph yields to an active `snapcompact` strategy unless `MORPH_COMPACT_OVERRIDE_SNAPCOMPACT=true`, and `/morph-compact` always forces Morph. Existing users who relied on plain `/compact` substituting Morph must now opt in or use `/morph-compact`.
 
 ## [0.1.0] - 2026-06-26
 

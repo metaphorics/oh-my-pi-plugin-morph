@@ -34,11 +34,44 @@ export default function morphPlugin(pi: ExtensionAPI): void {
   }
 
   if (MORPH_COMPACT_ENABLED) {
-    pi.on("session_before_compact", makeBeforeCompact(pi));
+    // Per-session state: omp invokes this factory once per session/subagent with
+    // its own `pi`, so these live in the closure (never module scope) — a
+    // subagent's auto-compaction must not corrupt the main session's counter.
+    //
+    // `autoCompactionDepth` distinguishes auto compaction (Morph is the default)
+    // from manual `/compact` (Morph only when opted in). The host brackets every
+    // auto pass with auto_compaction_start/end, always paired across success,
+    // abort, and error; a counter (not a bool) tolerates an aborted pass whose
+    // end overlaps the next pass's start.
+    let autoCompactionDepth = 0;
+    // True only while the dedicated `/morph-compact` command drives compaction,
+    // so its hook run forces Morph past the manual gate and the snapcompact yield.
+    let morphCompactForced = false;
+
+    pi.on("auto_compaction_start", async () => {
+      autoCompactionDepth++;
+    });
+    pi.on("auto_compaction_end", async () => {
+      if (autoCompactionDepth > 0) autoCompactionDepth--;
+    });
+
+    pi.on(
+      "session_before_compact",
+      makeBeforeCompact(pi, {
+        isAutoCompacting: () => autoCompactionDepth > 0,
+        isMorphCompactForced: () => morphCompactForced,
+      }),
+    );
+
     pi.registerCommand("morph-compact", {
       description: "Compact the session now using Morph",
       handler: async (_args, ctx) => {
-        await ctx.compact();
+        morphCompactForced = true;
+        try {
+          await ctx.compact();
+        } finally {
+          morphCompactForced = false;
+        }
       },
     });
   }

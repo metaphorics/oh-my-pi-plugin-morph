@@ -59,7 +59,11 @@ function textMsg(role: string, content: string) {
   return { role, content, timestamp: 0 };
 }
 
-function compactEvent(messagesToSummarize: unknown[], customInstructions?: string): SessionBeforeCompactEvent {
+function compactEvent(
+  messagesToSummarize: unknown[],
+  customInstructions?: string,
+  strategy?: string,
+): SessionBeforeCompactEvent {
   return {
     type: "session_before_compact",
     preparation: {
@@ -72,6 +76,7 @@ function compactEvent(messagesToSummarize: unknown[], customInstructions?: strin
       fileOps: { readFiles: [], modifiedFiles: [] },
       settings: {
         enabled: true,
+        strategy,
         reserveTokens: 0,
         keepRecentTokens: 0,
       },
@@ -80,6 +85,59 @@ function compactEvent(messagesToSummarize: unknown[], customInstructions?: strin
     signal: new AbortController().signal,
     customInstructions,
   } as unknown as SessionBeforeCompactEvent;
+}
+
+// Route fixtures mirror the closure accessors index.ts hands makeBeforeCompact:
+// AUTO_ROUTE = inside an auto_compaction bracket (Morph is the default there);
+// FORCED_ROUTE = the /morph-compact command driving compaction.
+const AUTO_ROUTE = {
+  isAutoCompacting: () => true,
+  isMorphCompactForced: () => false,
+};
+
+const FORCED_ROUTE = {
+  isAutoCompacting: () => false,
+  isMorphCompactForced: () => true,
+};
+
+function requireCompactClient(): NonNullable<typeof compactClient> {
+  const client = compactClient;
+  if (!client) throw new Error("compactClient not initialized");
+  return client;
+}
+
+function morphResult(output: string): CompactResult {
+  return {
+    id: "c1",
+    output,
+    messages: [],
+    usage: { input_tokens: 10, output_tokens: 3, compression_ratio: 0.3, processing_time_ms: 5 },
+    model: "morph-compact",
+  };
+}
+
+// Set live compaction-policy env vars for the duration of `fn`, restoring prior
+// values after. The policy gates are read live (not at import), so in-process
+// mutation is sufficient — no subprocess needed.
+async function withCompactEnv(
+  overrides: Record<string, string | undefined>,
+  fn: () => Promise<void>,
+): Promise<void> {
+  const prior = new Map<string, string | undefined>();
+  for (const key of Object.keys(overrides)) {
+    prior.set(key, process.env[key]);
+    const value = overrides[key];
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+  try {
+    await fn();
+  } finally {
+    for (const [key, value] of prior) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
 }
 
 function findRegisteredTool(name: string): ToolDefinition {
@@ -442,34 +500,28 @@ describe("compaction bridge", () => {
   test("returns Morph compaction result and falls back on empty/error/unset", async () => {
     setMorphApiKey("sk-test");
     initMorphClients();
-    expect(compactClient).not.toBeNull();
-    const originalCompact = compactClient!.compact.bind(compactClient!);
-    compactClient!.compact = async (input) => {
+    const client = requireCompactClient();
+    const originalCompact = client.compact.bind(client);
+    client.compact = async (input) => {
       expect(input.compressionRatio).toBe(COMPACT_RATIO);
-      return {
-        id: "c1",
-        output: "SUMMARY",
-        messages: [],
-        usage: { input_tokens: 10, output_tokens: 3, compression_ratio: 0.3, processing_time_ms: 5 },
-        model: "morph-compact",
-      } satisfies CompactResult;
+      return morphResult("SUMMARY");
     };
 
     const { pi } = fakePi();
     const ctx = { hasUI: true, ui: { notify() {} } };
-    const handler = makeBeforeCompact(pi);
+    const handler = makeBeforeCompact(pi, AUTO_ROUTE);
     await expect(handler(compactEvent([textMsg("user", "hi"), textMsg("assistant", "yo")]), ctx as never)).resolves.toEqual({
       compaction: { summary: "SUMMARY", firstKeptEntryId: "e1", tokensBefore: 1234 },
     });
     await expect(handler(compactEvent([]), ctx as never)).resolves.toBeUndefined();
     await expect(handler(compactEvent([textMsg("user", "hi")], "focus on files"), ctx as never)).resolves.toBeUndefined();
 
-    compactClient!.compact = async () => {
+    client.compact = async () => {
       throw new Error("boom");
     };
     await expect(handler(compactEvent([textMsg("user", "hi")]), ctx as never)).resolves.toBeUndefined();
 
-    compactClient!.compact = originalCompact;
+    client.compact = originalCompact;
     setMorphApiKey(undefined);
     initMorphClients();
     await expect(handler(compactEvent([textMsg("user", "hi")]), ctx as never)).resolves.toBeUndefined();
@@ -478,24 +530,118 @@ describe("compaction bridge", () => {
   test("aborting after the Morph response rejects instead of falling back", async () => {
     setMorphApiKey("sk-test");
     initMorphClients();
-    expect(compactClient).not.toBeNull();
+    const client = requireCompactClient();
     const controller = new AbortController();
-    compactClient!.compact = async () => {
+    client.compact = async () => {
       controller.abort();
-      return {
-        id: "c2",
-        output: "SUMMARY",
-        messages: [],
-        usage: { input_tokens: 10, output_tokens: 3, compression_ratio: 0.3, processing_time_ms: 5 },
-        model: "morph-compact",
-      } satisfies CompactResult;
+      return morphResult("SUMMARY");
     };
 
     const { pi } = fakePi();
     const event = compactEvent([textMsg("user", "hi")]);
     (event as { signal: AbortSignal }).signal = controller.signal;
-    const handler = makeBeforeCompact(pi);
+    const handler = makeBeforeCompact(pi, AUTO_ROUTE);
     await expect(handler(event, { hasUI: false } as never)).rejects.toThrow();
+  });
+
+  test("manual compaction yields unless MORPH_COMPACT_MANUAL opts in", async () => {
+    setMorphApiKey("sk-test");
+    initMorphClients();
+    const client = requireCompactClient();
+    const calls: unknown[] = [];
+    client.compact = async (input) => {
+      calls.push(input);
+      return morphResult("SUMMARY");
+    };
+    const { pi } = fakePi();
+    const ctx = { hasUI: false };
+    const handler = makeBeforeCompact(pi);
+
+    await withCompactEnv({ MORPH_COMPACT_MANUAL: undefined }, async () => {
+      await expect(handler(compactEvent([textMsg("user", "hi")]), ctx as never)).resolves.toBeUndefined();
+    });
+    expect(calls).toHaveLength(0);
+
+    await withCompactEnv({ MORPH_COMPACT_MANUAL: "true" }, async () => {
+      await expect(handler(compactEvent([textMsg("user", "hi")]), ctx as never)).resolves.toEqual({
+        compaction: { summary: "SUMMARY", firstKeptEntryId: "e1", tokensBefore: 1234 },
+      });
+    });
+    expect(calls).toHaveLength(1);
+  });
+
+  test("auto compaction runs Morph by default without manual opt-in", async () => {
+    setMorphApiKey("sk-test");
+    initMorphClients();
+    const client = requireCompactClient();
+    const calls: unknown[] = [];
+    client.compact = async (input) => {
+      calls.push(input);
+      return morphResult("SUMMARY");
+    };
+    const { pi } = fakePi();
+    const ctx = { hasUI: false };
+    const handler = makeBeforeCompact(pi, AUTO_ROUTE);
+
+    await withCompactEnv({ MORPH_COMPACT_MANUAL: undefined }, async () => {
+      await expect(handler(compactEvent([textMsg("user", "hi")]), ctx as never)).resolves.toEqual({
+        compaction: { summary: "SUMMARY", firstKeptEntryId: "e1", tokensBefore: 1234 },
+      });
+    });
+    expect(calls).toHaveLength(1);
+  });
+
+  test("auto compaction yields to snapcompact unless overridden", async () => {
+    setMorphApiKey("sk-test");
+    initMorphClients();
+    const client = requireCompactClient();
+    const calls: unknown[] = [];
+    client.compact = async (input) => {
+      calls.push(input);
+      return morphResult("SUMMARY");
+    };
+    const { pi } = fakePi();
+    const ctx = { hasUI: false };
+    const handler = makeBeforeCompact(pi, AUTO_ROUTE);
+    const snapEvent = () => compactEvent([textMsg("user", "hi")], undefined, "snapcompact");
+
+    await withCompactEnv({ MORPH_COMPACT_OVERRIDE_SNAPCOMPACT: undefined }, async () => {
+      await expect(handler(snapEvent(), ctx as never)).resolves.toBeUndefined();
+    });
+    expect(calls).toHaveLength(0);
+
+    await withCompactEnv({ MORPH_COMPACT_OVERRIDE_SNAPCOMPACT: "true" }, async () => {
+      await expect(handler(snapEvent(), ctx as never)).resolves.toEqual({
+        compaction: { summary: "SUMMARY", firstKeptEntryId: "e1", tokensBefore: 1234 },
+      });
+    });
+    expect(calls).toHaveLength(1);
+  });
+
+  test("forced /morph-compact runs under snapcompact and without manual opt-in", async () => {
+    setMorphApiKey("sk-test");
+    initMorphClients();
+    const client = requireCompactClient();
+    const calls: unknown[] = [];
+    client.compact = async (input) => {
+      calls.push(input);
+      return morphResult("SUMMARY");
+    };
+    const { pi } = fakePi();
+    const ctx = { hasUI: false };
+    const handler = makeBeforeCompact(pi, FORCED_ROUTE);
+
+    await withCompactEnv(
+      { MORPH_COMPACT_MANUAL: undefined, MORPH_COMPACT_OVERRIDE_SNAPCOMPACT: undefined },
+      async () => {
+        await expect(
+          handler(compactEvent([textMsg("user", "hi")], undefined, "snapcompact"), ctx as never),
+        ).resolves.toEqual({
+          compaction: { summary: "SUMMARY", firstKeptEntryId: "e1", tokensBefore: 1234 },
+        });
+      },
+    );
+    expect(calls).toHaveLength(1);
   });
 });
 
@@ -549,6 +695,46 @@ describe("extension wiring", () => {
     expect(enabled).toContain("codebase_warpsearch");
     const disabled = githubToolDescriptionWithEnv({ MORPH_WARPGREP: "false", MORPH_API_KEY: "sk-test" });
     expect(disabled).not.toContain("codebase_warpsearch");
+  });
+
+  test("auto_compaction events flip the wired route to the Morph default", async () => {
+    setMorphApiKey("sk-test");
+    initMorphClients();
+    const client = requireCompactClient();
+    const calls: unknown[] = [];
+    client.compact = async (input) => {
+      calls.push(input);
+      return morphResult("SUMMARY");
+    };
+    const { pi, handlers } = fakePi();
+    morphPlugin(pi);
+
+    const before = handlers.session_before_compact?.[0];
+    const onStart = handlers.auto_compaction_start?.[0];
+    const onEnd = handlers.auto_compaction_end?.[0];
+    if (!before || !onStart || !onEnd) throw new Error("compaction handlers not registered");
+    const ctx = { hasUI: false };
+
+    await withCompactEnv({ MORPH_COMPACT_MANUAL: undefined }, async () => {
+      // Manual path (no auto bracket, no opt-in): yields to native.
+      await expect(before(compactEvent([textMsg("user", "hi")]), ctx)).resolves.toBeUndefined();
+      expect(calls).toHaveLength(0);
+
+      // Auto bracket open: Morph becomes the default.
+      await onStart({ type: "auto_compaction_start", reason: "threshold", action: "context-full" }, ctx);
+      await expect(before(compactEvent([textMsg("user", "hi")]), ctx)).resolves.toEqual({
+        compaction: { summary: "SUMMARY", firstKeptEntryId: "e1", tokensBefore: 1234 },
+      });
+      expect(calls).toHaveLength(1);
+
+      // Auto bracket closed: back to the manual yield.
+      await onEnd(
+        { type: "auto_compaction_end", action: "context-full", result: undefined, aborted: false, willRetry: false },
+        ctx,
+      );
+      await expect(before(compactEvent([textMsg("user", "hi")]), ctx)).resolves.toBeUndefined();
+      expect(calls).toHaveLength(1);
+    });
   });
 });
 

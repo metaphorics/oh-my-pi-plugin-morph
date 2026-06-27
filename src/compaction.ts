@@ -7,7 +7,11 @@ import type {
   SessionBeforeCompactResult,
 } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/types";
 import { throwIfAborted } from "@oh-my-pi/pi-coding-agent/tools/tool-errors";
-import { COMPACT_RATIO } from "./config.js";
+import {
+  COMPACT_RATIO,
+  morphCompactManualEnabled,
+  morphCompactOverridesSnapcompact,
+} from "./config.js";
 import { compactClient, morphReady } from "./morph-clients.js";
 
 export function formatCompressionPercent(result: CompactResult): number {
@@ -168,12 +172,35 @@ export function textToolResult(text: string, isError = false): AgentToolResult {
   return { content: [{ type: "text", text }], isError: isError || undefined };
 }
 
-export function makeBeforeCompact(pi: ExtensionAPI) {
+type MorphCompactionRouteState = {
+  isAutoCompacting(): boolean;
+  isMorphCompactForced(): boolean;
+};
+
+export function makeBeforeCompact(
+  pi: ExtensionAPI,
+  routeState: MorphCompactionRouteState = {
+    isAutoCompacting: () => false,
+    isMorphCompactForced: () => false,
+  },
+) {
   return async function beforeCompact(
     event: SessionBeforeCompactEvent,
     ctx: ExtensionContext,
   ): Promise<SessionBeforeCompactResult | undefined> {
     if (!morphReady() || !compactClient) return undefined;
+
+    const isAutoCompacting = routeState.isAutoCompacting();
+    const isForced = routeState.isMorphCompactForced() && !isAutoCompacting;
+    if (!isAutoCompacting && !isForced && !morphCompactManualEnabled()) return undefined;
+
+    if (
+      event.preparation.settings.strategy === "snapcompact" &&
+      !isForced &&
+      !morphCompactOverridesSnapcompact()
+    ) {
+      return undefined;
+    }
 
     const msgs = [...event.preparation.messagesToSummarize];
     if (msgs.length === 0) return undefined;
@@ -185,8 +212,6 @@ export function makeBeforeCompact(pi: ExtensionAPI) {
     if (input.length === 0) return undefined;
 
     try {
-      // Morph Compact has no custom-instruction parameter. Instructed compactions
-      // fall back above so omp native compaction can honor the user's focus.
       const result = await compactClient.compact({
         messages: input,
         compressionRatio: COMPACT_RATIO,

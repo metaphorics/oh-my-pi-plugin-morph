@@ -34,6 +34,27 @@ export const MORPH_FASTCOMPACT_ENABLED = process.env.MORPH_FASTCOMPACT !== "fals
 export const MORPH_ROUTING_HINT_ENABLED =
   process.env.MORPH_ROUTING_HINT !== "false";
 
+// Per-compaction policy gates. Unlike the registration flags above (read once at
+// import to decide what to register), these are read live on every compaction so
+// a session can flip them without a reload and tests can exercise both states.
+// They use opt-IN (`=== "true"`) semantics, the inverse of the opt-OUT
+// (`!== "false"`) registration flags.
+//
+// Manual `/compact` substitutes Morph only when explicitly opted in. Auto
+// compaction defaults to Morph (gated only by MORPH_COMPACT). The dedicated
+// `/morph-compact` command always uses Morph regardless of this gate.
+export function morphCompactManualEnabled(): boolean {
+  return process.env.MORPH_COMPACT_MANUAL === "true";
+}
+
+// When the active compaction strategy is "snapcompact", Morph yields to it so it
+// does not silently override the host's image-archive compaction. Opt in to let
+// Morph take precedence (e.g. text-only models where snapcompact would fall back
+// to an LLM summary anyway). The `/morph-compact` command overrides regardless.
+export function morphCompactOverridesSnapcompact(): boolean {
+  return process.env.MORPH_COMPACT_OVERRIDE_SNAPCOMPACT === "true";
+}
+
 // Upper bound on the bytes of a single resolved fastcompact input (file or
 // artifact) checked before any Morph API call, and the maximum number of
 // locations one fastcompact call may target. Both gate the SDK call so a single

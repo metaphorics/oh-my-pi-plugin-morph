@@ -54,33 +54,40 @@ export function buildMorphSystemRoutingHint(): string | null {
     ].join("\n");
   }
 
-  const lines = [MORPH_ROUTING_HINT_HEADER];
+  const toolLines: string[] = [];
 
   if (MORPH_EDIT_ENABLED) {
-    lines.push(
-      "- Prefer fast_edit for large or scattered edits inside existing files.",
+    toolLines.push(
+      "- Prefer fast_edit for edits inside existing files, especially large, scattered, or whitespace-sensitive changes.",
     );
-    lines.push("- Use native edit for small exact replacements.");
-    lines.push("- Use write for brand new files.");
+    toolLines.push(
+      "- Native edit still wins for trivial single-line or exact-string replacements; native write creates brand-new files.",
+    );
   }
 
   if (MORPH_WARPGREP_ENABLED) {
-    lines.push(
-      "- Use codebase_warpsearch for exploratory local codebase questions.",
+    toolLines.push(
+      "- Prefer codebase_warpsearch over manual grep-and-read loops for exploratory or natural-language questions about the workspace; native search is for exact symbol or string lookups.",
     );
   }
 
   if (MORPH_WARPGREP_GITHUB_ENABLED) {
-    lines.push(
-      "- Use github_warpsearch for public GitHub source questions.",
+    toolLines.push(
+      "- Prefer github_warpsearch over web search or doc fetching for how a public library or SDK works internally.",
     );
   }
 
   if (MORPH_FASTCOMPACT_ENABLED) {
-    lines.push(
-      "- Use fastcompact to condense a specific file or artifact into focused text; it does not compact the conversation.",
+    toolLines.push(
+      "- Prefer fastcompact to condense a specific file or artifact into focused text before reading it in full; it does not compact the conversation.",
     );
   }
 
-  return lines.length > 1 ? lines.join("\n") : null;
+  if (toolLines.length === 0) return null;
+
+  return [
+    MORPH_ROUTING_HINT_HEADER,
+    "- Favor Morph-backed tools over their native equivalents whenever the task fits one.",
+    ...toolLines,
+  ].join("\n");
 }

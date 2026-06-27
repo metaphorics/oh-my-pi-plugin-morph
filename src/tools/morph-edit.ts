@@ -23,8 +23,8 @@ import { withToolNote } from "../routing.js";
 const DESCRIPTION = `Edit existing files using partial code snippets with "// ... existing code ..." markers. Morph's AI merges your changes into the full file.
 
 WHEN TO USE fast_edit vs edit:
-- fast_edit: large files (300+ lines), multiple scattered changes, complex refactoring, whitespace-sensitive edits
-- native edit: small exact string replacements, simple renames, single-line fixes (faster, no API call)
+- fast_edit [PREFERRED for in-file edits]: large files (300+ lines), multiple scattered changes, complex refactoring, whitespace-sensitive edits, or any edit where exact-string matching is fragile
+- native edit: trivial single-line or exact-string replacements and simple renames (faster, no API call)
 - native write: creating new files from scratch
 
 FORMAT — use "// ... existing code ..." to represent unchanged sections:

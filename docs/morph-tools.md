@@ -4,7 +4,7 @@ This reference mirrors the always-on routing policy embedded by the omp extensio
 
 ## Code Editing Tool Selection
 
-Use the right editing tool for the job. `fast_edit` is not the default for all edits, but it should be preferred for edits where partial-snippet merging is faster or more reliable than exact-string replacement.
+Favor Morph-backed tools over their native equivalents whenever the task fits one. For edits inside existing files, prefer `fast_edit` by default; reserve native `edit` for trivial single-line or exact-string replacements and native `write` for brand-new files.
 
 ### First-Action Policy
 

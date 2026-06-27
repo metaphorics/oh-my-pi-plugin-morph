@@ -33,7 +33,7 @@ const GLOB_RE = /[*?[\]{}]/;
 const DESCRIPTION = `Compact one or more file or artifact locations into a shorter, query-focused digest using Morph Compact, and return the compacted text only.
 
 WHEN TO USE fastcompact:
-- Condense a large file or a long artifact (e.g. captured tool output) before reasoning over it
+- Prefer this over reading a large file or long artifact in full when you only need a focused digest before reasoning over it
 - Produce a focused summary of supplied content via an optional 'query'
 
 INPUT MODES:

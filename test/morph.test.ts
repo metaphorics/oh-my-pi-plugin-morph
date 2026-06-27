@@ -1788,6 +1788,12 @@ describe("feature flag wiring", () => {
     expect(guidance).not.toContain("fastcompact");
   });
 
+  test("configured routing guidance leads with a Morph-first preference and keeps the native floor", () => {
+    const guidance = routingGuidanceWithEnv({ MORPH_API_KEY: "sk-test" });
+    expect(guidance.startsWith(`${MORPH_ROUTING_HINT_HEADER}\n- Favor Morph-backed tools over their native equivalents`)).toBe(true);
+    expect(guidance).toContain("Native edit still wins");
+  });
+
   test("MORPH_ROUTING_HINT=false removes only the before_agent_start hook", () => {
     const registered = pluginRegistrationsWithEnv({ MORPH_ROUTING_HINT: "false" });
     expect(registered.handlers).not.toContain("before_agent_start");

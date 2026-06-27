@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Renamed the Morph extension tools to `fast_edit`, `codebase_warpsearch`, and `github_warpsearch`. The previous names `morph_edit`, `warpgrep_codebase_search`, and `warpgrep_github_search` are no longer registered.
 - Changed Morph session compaction to gate by trigger instead of running on every compaction: automatic compaction still defaults to Morph, plain manual `/compact` now uses Morph only when `MORPH_COMPACT_MANUAL=true`, Morph yields to an active `snapcompact` strategy unless `MORPH_COMPACT_OVERRIDE_SNAPCOMPACT=true`, and `/morph-compact` always forces Morph. Existing users who relied on plain `/compact` substituting Morph must now opt in or use `/morph-compact`.
+- Strengthened the tool-selection system hint and tool descriptions to prefer Morph-backed tools (`fast_edit`, `codebase_warpsearch`, `github_warpsearch`, `fastcompact`) over their native equivalents, while keeping native `edit`/`write`/search for trivial edits, new files, and exact lookups.
 
 ## [0.1.0] - 2026-06-26
 

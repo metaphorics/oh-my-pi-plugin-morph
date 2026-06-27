@@ -62,7 +62,7 @@ All configuration is via environment variables.
 
 ### `fast_edit`
 
-Use for large files, multiple scattered edits in one file, whitespace-sensitive edits, and complex refactors where exact old-string matching is brittle.
+Prefer this for edits inside existing files — large files, multiple scattered edits, whitespace-sensitive changes, and complex refactors where exact old-string matching is brittle. Native `edit` stays the choice for trivial single-line or exact-string replacements, and native `write` for new files.
 
 The model supplies a partial snippet with `// ... existing code ...` markers. The tool reads the full file from `ctx.cwd`, calls `morph.fastApply.applyEdit`, validates marker leakage and catastrophic truncation, then writes the merged file.
 
@@ -70,7 +70,7 @@ Approval tier: `write`.
 
 ### `codebase_warpsearch`
 
-Use for exploratory questions about the checked-out workspace, such as "Find the auth flow" or "Where is retry logic handled?" Exact symbol or string lookup should use native search tools.
+Prefer this over manual grep-and-read loops for exploratory questions about the checked-out workspace, such as "Find the auth flow" or "Where is retry logic handled?" Exact symbol or string lookup should use native search tools.
 
 Approval tier: `read`.
 
@@ -116,7 +116,7 @@ The command calls `ctx.compact()` with a per-invocation force flag so the Morph 
 
 ## Routing hint
 
-By default the extension appends a concise tool-selection policy through `before_agent_start`. Set `MORPH_ROUTING_HINT=false` to disable it. Tool descriptions also include runtime notes, including missing-key guidance.
+By default the extension appends a concise tool-selection policy through `before_agent_start`. With `MORPH_API_KEY` configured, the policy leads with a Morph-first preference (favor Morph-backed tools over native equivalents when a task fits one). Without a key, it tells the agent Morph tools are unavailable and to use native edit/write/search instead. Set `MORPH_ROUTING_HINT=false` to disable it. Tool descriptions also include runtime notes, including missing-key guidance.
 
 ## Agent access
 

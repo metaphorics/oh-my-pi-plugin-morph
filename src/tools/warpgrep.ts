@@ -24,9 +24,9 @@ import { raceAbort } from "../abort.js";
 
 const CODEBASE_DESCRIPTION = `Fast agentic codebase search. Uses ripgrep, file reading, and directory listing across multiple turns to find relevant code contexts.
 
-Use this for exploratory searches like "Find the authentication flow", "How does error handling work", "Where is the database connection configured". Returns relevant file sections with line numbers.
+Prefer this over manual grep-and-read loops for exploratory searches like "Find the authentication flow", "How does error handling work", "Where is the database connection configured". Returns relevant file sections with line numbers.
 
-For exact keyword searches (specific function names, variable names), prefer grep/ripgrep directly.`;
+For exact keyword searches (specific function names, variable names), use grep/ripgrep directly.`;
 
 const GITHUB_DESCRIPTION = `Grounded code context search for public GitHub repositories. Uses Morph's hosted WarpGrep to search indexed public repos without cloning them locally.
 

@@ -10,7 +10,7 @@ import * as zod from "zod/v4";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { COMPACT_RATIO, EXISTING_CODE_MARKER, FASTCOMPACT_MAX_BYTES, FASTCOMPACT_MAX_LOCATIONS, GITHUB_REPO_SUGGESTION_LIMIT, MORPH_ROUTING_HINT_HEADER, setMorphApiKey } from "../src/config.js";
+import { COMPACT_RATIO, EXISTING_CODE_MARKER, FASTCOMPACT_MAX_BYTES, FASTCOMPACT_MAX_LOCATIONS, FASTCOMPACT_MAX_QUERY_BYTES, GITHUB_REPO_SUGGESTION_LIMIT, MORPH_ROUTING_HINT_HEADER, setMorphApiKey } from "../src/config.js";
 import { compactClient, initMorphClients, morph, warpGrep } from "../src/morph-clients.js";
 import { makeBeforeCompact, serializeAgentMessagesForMorph } from "../src/compaction.js";
 import {
@@ -175,6 +175,44 @@ function pluginRegistrationsWithEnv(overrides: Record<string, string>): {
     throw new Error(`plugin subprocess produced no output. stderr: ${proc.stderr.toString()}`);
   }
   return JSON.parse(out) as { tools: string[]; handlers: string[]; commands: string[] };
+}
+
+// Capture the before_agent_start routing guidance produced under a given env so
+// import-time feature flags (baked once per process) can be exercised by an
+// MORPH_API_KEY-present subprocess. Returns the joined system-prompt text the
+// handler emits, or "" when no routing handler is registered.
+function routingGuidanceWithEnv(overrides: Record<string, string>): string {
+  const script = [
+    'const z = await import("zod/v4");',
+    "const handlers = {};",
+    "const pi = { zod: z, logger: { debug() {}, info() {}, warn() {}, error() {} }, registerTool() {}, on(e, h) { (handlers[e] ??= []).push(h); }, registerCommand() {} };",
+    'const mod = await import("./src/index.ts");',
+    "mod.default(pi);",
+    "const start = (handlers.before_agent_start || [])[0];",
+    'let guidance = "";',
+    'if (start) { const result = await start({ type: "before_agent_start", prompt: "hi", systemPrompt: [] }, {}); guidance = (result.systemPrompt || []).join("\\n"); }',
+    "process.stdout.write(JSON.stringify({ guidance }));",
+  ].join("\n");
+  const baseline: Record<string, string> = {
+    MORPH_EDIT: "true",
+    MORPH_WARPGREP: "true",
+    MORPH_WARPGREP_GITHUB: "true",
+    MORPH_COMPACT: "true",
+    MORPH_FASTCOMPACT: "true",
+    MORPH_ROUTING_HINT: "true",
+  };
+  const proc = Bun.spawnSync(["bun", "-e", script], {
+    cwd: join(import.meta.dir, ".."),
+    env: { ...process.env, ...baseline, ...overrides },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const out = proc.stdout.toString().trim();
+  if (!out) {
+    throw new Error(`routing guidance subprocess produced no output. stderr: ${proc.stderr.toString()}`);
+  }
+  const parsed = JSON.parse(out) as { guidance: string };
+  return parsed.guidance;
 }
 
 beforeEach(() => {
@@ -425,6 +463,7 @@ describe("compaction bridge", () => {
 describe("extension wiring", () => {
   test("registers tools, routing hook, compaction hook, and command", async () => {
     const { pi, tools, handlers, commands } = fakePi();
+    setMorphApiKey("sk-test");
     morphPlugin(pi);
 
     const registeredNames = tools.map((tool) => tool.name);
@@ -449,7 +488,14 @@ describe("extension wiring", () => {
       prompt: "hi",
       systemPrompt: [],
     }, {});
-    expect(result.systemPrompt.join("\n")).toContain(MORPH_ROUTING_HINT_HEADER);
+    const guidance = result.systemPrompt.join("\n");
+    expect(guidance).toContain(MORPH_ROUTING_HINT_HEADER);
+    for (const advertised of ["fast_edit", "codebase_warpsearch", "github_warpsearch", "fastcompact"]) {
+      expect(guidance).toContain(advertised);
+    }
+    for (const oldName of ["morph_edit", "warpgrep_codebase_search", "warpgrep_github_search"]) {
+      expect(guidance).not.toContain(oldName);
+    }
 
     const idempotent = await handlers.before_agent_start![0]!({
       type: "before_agent_start",
@@ -1302,6 +1348,23 @@ describe("fastcompact execute", () => {
     });
   });
 
+  test("rejects an oversized query before the SDK call", async () => {
+    setMorphApiKey("sk-test");
+    initMorphClients();
+    const calls = stubCompact(() => fakeResult("X"));
+    await withTempDir(async (dir) => {
+      writeFileSync(join(dir, "doc.txt"), "content to compact\n");
+      const result = await runTool(
+        "fastcompact",
+        { location: "doc.txt", query: "A".repeat(FASTCOMPACT_MAX_QUERY_BYTES + 1) },
+        { cwd: dir },
+      );
+      expect(result.isError).toBe(true);
+      expect(toolText(result)).toContain("query");
+      expect(calls).toHaveLength(0);
+    });
+  });
+
   test("rejects too many locations before the SDK call", async () => {
     setMorphApiKey("sk-test");
     initMorphClients();
@@ -1481,6 +1544,15 @@ describe("feature flag wiring", () => {
     expect(registered.tools).toEqual(["codebase_warpsearch", "fast_edit", "github_warpsearch"]);
     expect(registered.handlers).toContain("session_before_compact");
     expect(registered.commands).toContain("morph-compact");
+  });
+
+  test("MORPH_FASTCOMPACT=false omits fastcompact from routing guidance while advertising enabled tools", () => {
+    const guidance = routingGuidanceWithEnv({ MORPH_FASTCOMPACT: "false", MORPH_API_KEY: "sk-test" });
+    expect(guidance).toContain(MORPH_ROUTING_HINT_HEADER);
+    expect(guidance).toContain("fast_edit");
+    expect(guidance).toContain("codebase_warpsearch");
+    expect(guidance).toContain("github_warpsearch");
+    expect(guidance).not.toContain("fastcompact");
   });
 
   test("MORPH_ROUTING_HINT=false removes only the before_agent_start hook", () => {

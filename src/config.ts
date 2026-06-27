@@ -40,3 +40,8 @@ export const MORPH_ROUTING_HINT_ENABLED =
 // tool call cannot stream an unbounded payload to Morph.
 export const FASTCOMPACT_MAX_BYTES = 1_048_576;
 export const FASTCOMPACT_MAX_LOCATIONS = 10;
+
+// Upper bound on the UTF-8 byte length of the optional fastcompact focus query,
+// checked before any Morph API call so a single tool call cannot smuggle an
+// unbounded query string to Morph alongside the bounded input.
+export const FASTCOMPACT_MAX_QUERY_BYTES = 16_384;

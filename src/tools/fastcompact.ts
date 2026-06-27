@@ -13,6 +13,7 @@ import {
   COMPACT_RATIO,
   FASTCOMPACT_MAX_BYTES,
   FASTCOMPACT_MAX_LOCATIONS,
+  FASTCOMPACT_MAX_QUERY_BYTES,
   MORPH_API_KEY,
 } from "../config.js";
 import { compactResultText, textToolResult } from "../compaction.js";
@@ -246,6 +247,19 @@ Alternatively, read the location with the native 'read' tool.`);
         }
         const compressionRatio = rawRatio ?? COMPACT_RATIO;
         const query = params.query?.trim() || undefined;
+        // A focus query is sent to Morph alongside the bounded input; cap its
+        // UTF-8 byte length here so an oversized query cannot smuggle an
+        // unbounded payload past the input bound. Buffer.byteLength measures
+        // without allocating the encoded query.
+        if (query !== undefined) {
+          const queryBytes = Buffer.byteLength(query, "utf8");
+          if (queryBytes > FASTCOMPACT_MAX_QUERY_BYTES) {
+            return textToolResult(
+              `Error: query is too long (${queryBytes} bytes); the limit is ${FASTCOMPACT_MAX_QUERY_BYTES} bytes.`,
+              true,
+            );
+          }
+        }
 
         const sections: string[] = [];
         for (const text of resolved) {

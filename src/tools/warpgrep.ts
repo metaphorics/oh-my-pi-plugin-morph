@@ -20,6 +20,7 @@ import {
 import { formatWarpGrepResult } from "../format.js";
 import { warpGrep } from "../morph-clients.js";
 import { withToolNote } from "../routing.js";
+import { raceAbort } from "../abort.js";
 
 const CODEBASE_DESCRIPTION = `Fast agentic codebase search. Uses ripgrep, file reading, and directory listing across multiple turns to find relevant code contexts.
 
@@ -42,33 +43,6 @@ This tool is for public remote repos.
 Provide exactly one repository locator:
 - owner_repo: "owner/repo"
 - github_url: "https://github.com/owner/repo"`;
-
-// Reject as soon as `signal` aborts instead of waiting for an in-flight SDK or
-// network promise to settle, so a cancelled tool releases the harness promptly.
-// The underlying promise is still awaited (its rejection handled) to avoid an
-// unhandled rejection once it eventually settles in the background.
-function raceAbort<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
-  if (!signal) return promise;
-  const abortError = () => {
-    const reason = signal.reason instanceof Error ? signal.reason : undefined;
-    return reason instanceof ToolAbortError ? reason : new ToolAbortError();
-  };
-  if (signal.aborted) return Promise.reject(abortError());
-  return new Promise<T>((resolve, reject) => {
-    const onAbort = () => reject(abortError());
-    signal.addEventListener("abort", onAbort, { once: true });
-    promise.then(
-      (value) => {
-        signal.removeEventListener("abort", onAbort);
-        resolve(value);
-      },
-      (error) => {
-        signal.removeEventListener("abort", onAbort);
-        reject(error);
-      },
-    );
-  });
-}
 
 export function makeWarpgrepCodebase(pi: ExtensionAPI) {
   const { z } = pi.zod;

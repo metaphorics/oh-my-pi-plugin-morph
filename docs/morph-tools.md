@@ -62,7 +62,7 @@ Use `fastcompact` to condense a specific file or artifact into shorter, query-fo
 - Pass a single `location` (a repo-relative file path or an `artifact://<id>` locator), or a `locations` array compacted in order.
 - Use the optional `query` to focus the digest and `compression_ratio` to override the configured ratio.
 - It returns compacted text only and never writes to disk, overwrites inputs, saves artifacts, or mutates session history.
-- Reach for `/morph-compact` or the `session_before_compact` hook to compact conversation history; reach for `fastcompact` to compact supplied locations.
+- Reach for the `session_before_compact` hook, including automatic compaction and manual `/compact`, to compact conversation history; reach for `fastcompact` to compact supplied locations.
 
 ## Tool Exposure Requirement
 

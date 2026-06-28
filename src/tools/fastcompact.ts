@@ -44,7 +44,7 @@ INPUT MODES:
 
 GUARANTEES:
 - Read-only: never writes to disk, overwrites inputs, saves artifacts, or mutates session history
-- Returns compacted text only; it does NOT compact the conversation (use /morph-compact for that)
+- Returns compacted text only; it does NOT compact the conversation (manual /compact and the session compaction hook handle that)
 
 LIMITS: repo-relative paths only (no absolute paths, root escapes, directories, or globs); bounded input size and location count.
 

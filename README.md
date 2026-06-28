@@ -51,12 +51,10 @@ All configuration is via environment variables.
 | `MORPH_EDIT` | `true` | Set `false` to disable `fast_edit`. |
 | `MORPH_WARPGREP` | `true` | Set `false` to disable local WarpGrep. |
 | `MORPH_WARPGREP_GITHUB` | `true` | Set `false` to disable public GitHub search. |
-| `MORPH_COMPACT` | `true` | Set `false` to disable the compaction hook and command. |
+| `MORPH_COMPACT` | `true` | Set `false` to disable the compaction hook. |
 | `MORPH_FASTCOMPACT` | `true` | Set `false` to disable the `fastcompact` tool. |
 | `MORPH_ROUTING_HINT` | `true` | Set `false` to skip per-turn tool-selection system hints. |
 | `MORPH_COMPACT_RATIO` | `0.3` | Target fraction to keep for Morph compaction. Valid range: `0.05` to `1`. |
-| `MORPH_COMPACT_MANUAL` | `false` | Set `true` to let plain manual `/compact` use Morph. By default manual `/compact` stays on omp's native compaction path. |
-| `MORPH_COMPACT_OVERRIDE_SNAPCOMPACT` | `false` | Set `true` to let Morph override an active `snapcompact` strategy. By default Morph yields to snapcompact. |
 
 ## Tools
 
@@ -93,26 +91,17 @@ Approval tier: `read`.
 
 ## Compaction
 
-This extension hooks omp's `session_before_compact` event, but it does not replace every compaction mode unconditionally.
+This extension hooks omp's `session_before_compact` event. Morph Compact handles automatic compaction and manual `/compact` by default when `MORPH_COMPACT` is enabled and Morph is configured.
 
-- Automatic context compaction uses Morph Compact by default when `MORPH_COMPACT` is enabled and Morph is configured.
-- Plain manual `/compact` uses Morph only when `MORPH_COMPACT_MANUAL=true`; otherwise it stays on omp's native compaction path.
-- If the active omp compaction strategy is `snapcompact`, Morph yields to snapcompact by default. Set `MORPH_COMPACT_OVERRIDE_SNAPCOMPACT=true` to let Morph take precedence.
-- `/morph-compact` always forces Morph for that invocation, including when manual `/compact` is not opted in or the active strategy is `snapcompact`.
+- If the resolved omp strategy is `snapcompact` and no focus text is present, Morph yields so the host keeps image-archive compaction.
+- For non-snapcompact strategies and focused compactions, Morph compacts the selected history and returns the hook result to omp.
+- `/compact <focus text>` forwards the focus text to Morph as the compaction query.
 
-Behavior change: older plugin builds substituted Morph for plain manual `/compact` by default. Existing users who relied on that behavior must now set `MORPH_COMPACT_MANUAL=true` or use `/morph-compact`.
+When Morph runs, the serialized selected history and any focus text are sent to Morph's API. Leave `MORPH_API_KEY` unset, set `MORPH_COMPACT=false`, or use unfocused `snapcompact` when transcript egress is not acceptable.
 
-If Morph is unavailable, the selected history is empty, the request includes custom focus instructions, or the API errors, the handler returns `undefined` so omp falls back to its native summarizer.
+If Morph is unavailable, the selected history is empty, serialization produces no input, Morph returns an empty summary, or the API errors, the handler returns `undefined` so omp runs its configured native strategy.
 
-Manual Morph trigger:
-
-```text
-/morph-compact
-```
-
-The command calls `ctx.compact()` with a per-invocation force flag so the Morph bridge runs when enabled.
-
-`fastcompact` is a separate tool, not part of this hook. The `session_before_compact` hook and `/morph-compact` command compact conversation history; `fastcompact` compacts a supplied file or artifact location and returns text without touching the session.
+`fastcompact` is a separate tool, not part of this hook. The `session_before_compact` hook compacts conversation history; `fastcompact` compacts a supplied file or artifact location and returns text without touching the session.
 
 ## Routing hint
 

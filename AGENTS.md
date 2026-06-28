@@ -13,13 +13,16 @@
 - Rule: Keep the native floor when strengthening Morph prompts: native `edit` for trivial exact replacements, native `write` for new files, and native search for exact symbol or string lookups.
 - Why: The routing policy and tool docs intentionally prefer Morph where it fits without wasting remote calls on cheap local operations.
 
-- Rule: Do not make Morph own every compaction path. Auto compaction defaults to Morph, plain manual `/compact` needs `MORPH_COMPACT_MANUAL=true`, active `snapcompact` wins unless `MORPH_COMPACT_OVERRIDE_SNAPCOMPACT=true`, and `/morph-compact` always forces Morph for that invocation.
-- Why: omp's native summarizer and `snapcompact` remain valid host strategies; the Morph bridge returns `undefined` for fallback cases.
+- Rule: Morph drives automatic and manual `/compact` compaction by default. It yields to an active `snapcompact` strategy when no focus text is present, and forwards `/compact <focus>` to Morph as a query. The bridge returns `undefined` for native-fallback cases — no key, empty history, empty serialized input, empty summary, or API error — so the host runs its native strategy; an abort after Morph responds re-throws instead of falling back.
+- Why: `snapcompact` remains a valid host image-archive strategy the plugin must not override for unfocused compaction. Focused compaction is a directed LLM summary path, so Morph receives the focus query.
+
+- Rule: The compaction bridge yields to native when `event.preparation.settings.remoteEnabled === false` (the `/compact soft` local-only path), and folds the inputs the native summarizer owns into the Morph request: `previousSummary` as a synthetic leading message and split-turn `turnPrefixMessages`.
+- Why: The host applies a hook-provided summary verbatim and keeps only entries from `firstKeptEntryId` onward, so a local-only request must not egress to Morph and previously summarized or split-turn-prefix history would otherwise be silently dropped.
 
 ## Extension lifecycle state
 
 - Rule: Session mutable state belongs inside `morphPlugin(pi)`, not module scope.
-- Why: omp invokes the extension factory separately per session and subagent; closure state prevents one session's auto-compaction counter or forced-compaction flag from leaking into another.
+- Why: omp invokes the extension factory separately per session and subagent; if future session-specific state is needed, closure state prevents one session from leaking into another.
 
 ## Verification gates
 

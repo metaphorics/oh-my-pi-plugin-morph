@@ -5,7 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.3.0] - 2026-06-27
+
+### Changed
+
+- Morph compaction now drives all automatic and manual `/compact` compaction by default when Morph is configured. Previously only automatic compaction defaulted to Morph, while manual `/compact` required `MORPH_COMPACT_MANUAL=true`.
+- `/compact <focus>` now forwards the focus text to Morph as a compaction query, including when the configured strategy is `snapcompact`; unfocused `snapcompact` still yields to the host image-archive path.
+
+### Removed
+
+- Removed the `MORPH_COMPACT_MANUAL` and `MORPH_COMPACT_OVERRIDE_SNAPCOMPACT` environment variables.
+- Removed the `/morph-compact` command. Morph now yields to an unfocused active `snapcompact` strategy, and native compaction remains the fallback on failure.
 
 ## [0.2.0] - 2026-06-27
 

@@ -13,13 +13,13 @@
 - Rule: Keep the native floor when strengthening Morph prompts: native `edit` for trivial exact replacements, native `write` for new files, and native search for exact symbol or string lookups.
 - Why: The routing policy and tool docs intentionally prefer Morph where it fits without wasting remote calls on cheap local operations.
 
-- Rule: Do not make Morph own every compaction path. Auto compaction defaults to Morph, plain manual `/compact` needs `MORPH_COMPACT_MANUAL=true`, active `snapcompact` wins unless `MORPH_COMPACT_OVERRIDE_SNAPCOMPACT=true`, and `/morph-compact` always forces Morph for that invocation.
-- Why: omp's native summarizer and `snapcompact` remain valid host strategies; the Morph bridge returns `undefined` for fallback cases.
+- Rule: Morph drives automatic and manual `/compact` compaction by default. It yields to an active `snapcompact` strategy when no focus text is present, and forwards `/compact <focus>` to Morph as a query. The bridge returns `undefined` so the host runs its native strategy on every failure: no key, empty history, empty serialized input, empty summary, or API error.
+- Why: `snapcompact` remains a valid host image-archive strategy the plugin must not override for unfocused compaction. Focused compaction is a directed LLM summary path, so Morph receives the focus query.
 
 ## Extension lifecycle state
 
 - Rule: Session mutable state belongs inside `morphPlugin(pi)`, not module scope.
-- Why: omp invokes the extension factory separately per session and subagent; closure state prevents one session's auto-compaction counter or forced-compaction flag from leaking into another.
+- Why: omp invokes the extension factory separately per session and subagent; if future session-specific state is needed, closure state prevents one session from leaking into another.
 
 ## Verification gates
 

@@ -1,5 +1,5 @@
 ---
-title: Trigger-gated Morph compaction routing with closure-scoped per-session state
+title: Morph-default compaction with native fallback
 date: 2026-06-27
 category: architecture-patterns
 module: morph-plugin
@@ -8,16 +8,16 @@ component: compaction
 severity: high
 related_components:
   - extension-lifecycle
-  - commands
   - config
 applies_when:
-  - Building omp extension state that distinguishes session events
   - Routing transcript compaction through Morph or another backend
   - Supporting snapcompact alongside a custom session_before_compact hook
-  - Adding a command that forces one compaction backend for a single invocation
+  - Preserving native host fallback when an extension backend fails
+  - Keeping session-local extension state out of module scope
 symptoms:
-  - Manual /compact and automatic compaction need different backend defaults
-  - snapcompact must keep ownership of the snapcompact strategy unless overridden
+  - Automatic and manual /compact should use the same backend contract
+  - snapcompact must keep ownership of the snapcompact strategy
+  - Focus text from /compact needs to reach the compaction backend
   - Session or subagent state must not leak through module globals
 root_cause: scope_issue
 resolution_type: code_fix
@@ -27,149 +27,116 @@ tags:
   - compaction
   - extension-lifecycle
   - closure-scope
-  - session-state
   - snapcompact
   - routing
 ---
 
-# Trigger-gated Morph compaction routing with closure-scoped per-session state
+# Morph-default compaction with native fallback
 
 ## Context
 
-The Morph plugin hooks omp's `session_before_compact` event to replace selected transcript summarization with Morph Compact. That event is shared by multiple host paths: automatic context maintenance, plain manual `/compact`, `/compact snapcompact`, and the dedicated `/morph-compact` command.
+The Morph plugin hooks omp's `session_before_compact` event to replace transcript summarization with Morph Compact. The current contract is deliberately uniform: automatic compaction and manual `/compact` both route through Morph when the hook is enabled and Morph is configured.
 
-A hook that always returns a compaction is too broad. It hijacks plain manual `/compact`, and it disables omp's `snapcompact` strategy because the host treats a hook result as `fromHook`. The extension also needs per-session route state, because omp invokes the extension factory once per session or subagent while module globals are shared process-wide.
+That uniform contract removes the old trigger matrix. There is no manual opt-in flag, no snapcompact override flag, no dedicated `/morph-compact` command, and no auto/forced route state. The hook either returns a Morph compaction result or returns `undefined` so the host runs its configured native strategy.
+
+One host strategy remains special. `snapcompact` is host-owned image-archive compaction, not a normal LLM summary path. The Morph hook must yield when the resolved strategy is `snapcompact` and no focus text is present.
 
 ## Guidance
 
-Gate the compaction hook by trigger, not by hook presence alone.
+Keep one Morph-default `session_before_compact` hook:
 
-- Auto-compaction uses Morph by default when Morph is enabled and configured.
-- Plain manual `/compact` uses Morph only when `MORPH_COMPACT_MANUAL=true`.
-- An active `snapcompact` strategy keeps ownership unless `MORPH_COMPACT_OVERRIDE_SNAPCOMPACT=true`.
-- `/morph-compact` forces Morph for that invocation.
-- Custom focus instructions still yield to native compaction because Morph's transcript bridge does not carry omp's custom instruction parameter.
+- Register the hook only when `MORPH_COMPACT` is enabled.
+- Yield when `event.preparation.settings.strategy === "snapcompact"` and no focus text is present.
+- Serialize the selected messages and return `undefined` on empty history or empty serialized input.
+- Forward `/compact <focus>` by passing the trimmed focus text as Morph's `query` field, including when configured snapcompact would otherwise fall back to a native LLM summary.
+- Return `undefined` on missing Morph credentials, empty Morph summaries, and Morph API errors.
+- Re-throw abort-after-response failures so cancellation is not mistaken for a native-fallback case.
 
-Keep route state inside the extension factory closure:
+The extension wiring stays simple:
 
 ```ts
 export default function morphPlugin(pi: ExtensionAPI): void {
-  let autoCompactionDepth = 0;
-  let morphCompactForced = false;
-
-  pi.on("auto_compaction_start", async () => {
-    autoCompactionDepth++;
-  });
-  pi.on("auto_compaction_end", async () => {
-    if (autoCompactionDepth > 0) autoCompactionDepth--;
-  });
-
-  pi.on(
-    "session_before_compact",
-    makeBeforeCompact(pi, {
-      isAutoCompacting: () => autoCompactionDepth > 0,
-      isMorphCompactForced: () => morphCompactForced,
-    }),
-  );
-
-  pi.registerCommand("morph-compact", {
-    description: "Compact the session now using Morph",
-    handler: async (_args, ctx) => {
-      morphCompactForced = true;
-      try {
-        await ctx.compact();
-      } finally {
-        morphCompactForced = false;
-      }
-    },
-  });
+  if (MORPH_COMPACT_ENABLED) {
+    pi.on("session_before_compact", makeBeforeCompact(pi));
+  }
 }
 ```
 
-Then keep the Morph hook conservative unless the route state allows it:
+The hook owns the routing rule directly:
 
 ```ts
-const isAutoCompacting = routeState.isAutoCompacting();
-const isForced = routeState.isMorphCompactForced() && !isAutoCompacting;
-if (!isAutoCompacting && !isForced && !morphCompactManualEnabled()) return undefined;
+if (!morphReady() || !compactClient) return undefined;
 
-if (
-  event.preparation.settings.strategy === "snapcompact" &&
-  !isForced &&
-  !morphCompactOverridesSnapcompact()
-) {
-  return undefined;
-}
+const focus = event.customInstructions?.trim() || undefined;
+if (!focus && event.preparation.settings.strategy === "snapcompact") return undefined;
+
+const result = await compactClient.compact({
+  messages: input,
+  compressionRatio: COMPACT_RATIO,
+  preserveRecent: 0,
+  query: focus,
+});
 ```
+
+Keep any future session-mutable state inside `morphPlugin(pi)`, not module scope. omp invokes the extension factory once per session and subagent, so closure state is the boundary that prevents one session from leaking into another. The current consolidated compaction path does not need route state, but the lifecycle rule still matters for future session-local behavior.
 
 ## Why this matters
 
-The omp host already tells extensions when auto-compaction starts and ends. A depth counter is safer than a boolean because an aborted auto pass can overlap the next start/end pair. A boolean can clear the new pass accidentally; a counter preserves the bracket count.
+A per-trigger policy table was extra state for a contract that no longer needs it. Plain `/compact` and automatic compaction now share the same Morph-default behavior, so auto-depth counters and command force flags would only preserve a deleted distinction.
 
-The `/morph-compact` force flag is safe only because omp serializes compaction within one session. `ctx.compact()` sets the host compaction guard before it emits `session_before_compact`, and another same-session compaction is rejected before it can emit a second hook. If the host ever allows concurrent same-session compactions, replace the boolean with an invocation token that is consumed by the matching hook call.
+Returning `undefined` is still the right fallback boundary. It lets omp run the configured native strategy when Morph is unavailable, when the selected transcript has no serializable text, or when the Morph API fails. That keeps the host in charge of recovery without adding a second policy layer inside the plugin.
 
-Factory-closure state is the boundary that matters. A module-scope `let` would be shared by the main session and subagents in one process, so one subagent's auto-compaction could misclassify the main session's later manual `/compact` as auto. Closure state is scoped to that `morphPlugin(pi)` binding.
-
-The policy gates also have different default semantics than registration flags. Registration flags are import-time opt-out switches such as `MORPH_COMPACT !== "false"`. Per-compaction override gates are live opt-in switches such as `MORPH_COMPACT_MANUAL === "true"`, because their job is to override host behavior only when explicitly requested.
+`snapcompact` preserves image context through a host image-archive strategy, so Morph should not replace it for unfocused compaction. Focus text changes the host path into a directed LLM summary rather than an image archive, so Morph should receive the query there.
 
 ## When to apply
 
-- An omp extension hook fires for multiple host triggers, but only some triggers should use the extension's backend.
-- A plugin command must force behavior for one host call without changing global config.
-- The extension needs to distinguish automatic maintenance from manual user commands.
-- The code must coexist with omp strategies such as `snapcompact` that have their own host-side behavior.
-- Any mutable state tracks session lifecycle, auto-compaction lifecycle, command force mode, or subagent behavior.
+- A compaction hook should provide one default backend across automatic and manual triggers.
+- A host strategy such as `snapcompact` has behavior the extension must not override.
+- A custom backend can fail cleanly by returning `undefined` and letting the host continue.
+- A manual command or env override has become redundant with the default behavior.
+- Any future mutable state tracks session lifecycle or subagent behavior.
 
 ## Examples
 
 Wrong shape:
 
 ```ts
-let autoCompacting = false;
-let forced = false;
+let autoCompactionDepth = 0;
+let morphCompactForced = false;
 
-export default function morphPlugin(pi: ExtensionAPI): void {
-  pi.on("session_before_compact", makeBeforeCompact(pi));
-}
+pi.on("auto_compaction_start", async () => {
+  autoCompactionDepth++;
+});
+pi.registerCommand("morph-compact", { handler: async (_args, ctx) => ctx.compact() });
+
+pi.on("session_before_compact", makeBeforeCompact(pi, {
+  isAutoCompacting: () => autoCompactionDepth > 0,
+  isMorphCompactForced: () => morphCompactForced,
+}));
 ```
 
-That shape has two bugs: module-scope state can leak across sessions, and the hook has no trigger context, so it tends to replace every compaction path.
+That shape preserves old trigger gates after manual `/compact` and automatic compaction have the same contract. It also leaves a removed command surface in the extension.
 
 Correct shape:
 
 ```ts
-export default function morphPlugin(pi: ExtensionAPI): void {
-  let autoCompactionDepth = 0;
-  let forced = false;
-
-  pi.on("auto_compaction_start", async () => {
-    autoCompactionDepth++;
-  });
-  pi.on("auto_compaction_end", async () => {
-    if (autoCompactionDepth > 0) autoCompactionDepth--;
-  });
-
-  pi.on("session_before_compact", makeBeforeCompact(pi, {
-    isAutoCompacting: () => autoCompactionDepth > 0,
-    isMorphCompactForced: () => forced,
-  }));
-}
+pi.on("session_before_compact", makeBeforeCompact(pi));
 ```
 
-Tests should cover the policy table, not only successful Morph output:
+Tests should cover the remaining contract:
 
-- Manual `/compact` yields when `MORPH_COMPACT_MANUAL` is unset.
-- Manual `/compact` uses Morph when `MORPH_COMPACT_MANUAL=true`.
-- Auto-compaction uses Morph without manual opt-in.
-- Auto-compaction yields to `snapcompact` unless `MORPH_COMPACT_OVERRIDE_SNAPCOMPACT=true`.
-- `/morph-compact` forces Morph under `snapcompact` without global env changes.
-- `auto_compaction_start` and `auto_compaction_end` flip the route and restore it.
+- `snapcompact` strategy yields and does not call Morph.
+- Non-snapcompact compaction calls Morph by default.
+- `/compact <focus>` forwards the focus as `query`.
+- No `/morph-compact` command is registered.
+- No `auto_compaction_start` or `auto_compaction_end` route handlers are registered.
+- Failure cases still return `undefined`, while abort-after-response still rejects.
 
 ## Related
 
-- `src/config.ts` defines live opt-in policy gates.
-- `src/compaction.ts` applies manual, auto, forced, custom-instruction, and snapcompact routing gates.
-- `src/index.ts` owns closure-scoped auto-depth and force state.
-- `test/morph.test.ts` covers the trigger matrix and closure wiring.
-- `README.md` documents the user-facing contract for `/compact`, `/morph-compact`, and snapcompact compatibility.
-- `CHANGELOG.md` records the manual `/compact` behavior change.
+- `src/config.ts` defines the registration flag and compact ratio.
+- `src/compaction.ts` applies the snapcompact yield, Morph request, focus query, and fallback behavior.
+- `src/index.ts` registers the single compaction hook without route state.
+- `test/morph.test.ts` covers the consolidated routing and wiring behavior.
+- `README.md` documents the user-facing contract for `/compact` and snapcompact compatibility.
+- `CHANGELOG.md` records the removal of the manual opt-in env vars and dedicated command.

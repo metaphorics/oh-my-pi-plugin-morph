@@ -7,11 +7,7 @@ import type {
   SessionBeforeCompactResult,
 } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/types";
 import { throwIfAborted } from "@oh-my-pi/pi-coding-agent/tools/tool-errors";
-import {
-  COMPACT_RATIO,
-  morphCompactManualEnabled,
-  morphCompactOverridesSnapcompact,
-} from "./config.js";
+import { COMPACT_RATIO } from "./config.js";
 import { compactClient, morphReady } from "./morph-clients.js";
 
 export function formatCompressionPercent(result: CompactResult): number {
@@ -172,40 +168,24 @@ export function textToolResult(text: string, isError = false): AgentToolResult {
   return { content: [{ type: "text", text }], isError: isError || undefined };
 }
 
-type MorphCompactionRouteState = {
-  isAutoCompacting(): boolean;
-  isMorphCompactForced(): boolean;
-};
-
-export function makeBeforeCompact(
-  pi: ExtensionAPI,
-  routeState: MorphCompactionRouteState = {
-    isAutoCompacting: () => false,
-    isMorphCompactForced: () => false,
-  },
-) {
+export function makeBeforeCompact(pi: ExtensionAPI) {
   return async function beforeCompact(
     event: SessionBeforeCompactEvent,
     ctx: ExtensionContext,
   ): Promise<SessionBeforeCompactResult | undefined> {
     if (!morphReady() || !compactClient) return undefined;
 
-    const isAutoCompacting = routeState.isAutoCompacting();
-    const isForced = routeState.isMorphCompactForced() && !isAutoCompacting;
-    if (!isAutoCompacting && !isForced && !morphCompactManualEnabled()) return undefined;
+    // `/compact <focus>` carries focus instructions; forward them to Morph as
+    // the compaction query rather than yielding to native. The host mirrors this:
+    // configured snapcompact falls back to an LLM summary when focus is present.
+    const focus = event.customInstructions?.trim() || undefined;
 
-    if (
-      event.preparation.settings.strategy === "snapcompact" &&
-      !isForced &&
-      !morphCompactOverridesSnapcompact()
-    ) {
-      return undefined;
-    }
+    // snapcompact is a host-owned, non-LLM strategy (image archive). Yield when
+    // no focus is present so the host keeps it; focused compactions use Morph.
+    if (!focus && event.preparation.settings.strategy === "snapcompact") return undefined;
 
-    const msgs = [...event.preparation.messagesToSummarize];
+    const msgs = event.preparation.messagesToSummarize;
     if (msgs.length === 0) return undefined;
-
-    if (event.customInstructions?.trim()) return undefined;
 
     throwIfAborted(event.signal);
     const input = serializeAgentMessagesForMorph(msgs as MessageWithRole[]);
@@ -216,6 +196,7 @@ export function makeBeforeCompact(
         messages: input,
         compressionRatio: COMPACT_RATIO,
         preserveRecent: 0,
+        query: focus,
       });
       throwIfAborted(event.signal);
 

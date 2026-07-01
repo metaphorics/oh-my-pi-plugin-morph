@@ -1247,6 +1247,47 @@ describe("warpgrep execute", () => {
     expect(toolText(result)).toContain("warp exploded");
   });
 
+  test("codebase search retries a transient overload result and formats the successful retry", async () => {
+    setMorphApiKey("sk-test");
+    initMorphClients();
+    let calls = 0;
+    setWarpExecute(() => {
+      calls++;
+      if (calls === 1) {
+        return (async function* () {
+          return {
+            success: false,
+            error:
+              "Search did not complete: terminated. Errors: 429 Service overloaded, please retry shortly.",
+          };
+        })();
+      }
+      return (async function* () {
+        return { success: true, contexts: [{ file: "src/auth.ts", content: "code", lines: [[1, 5]] }] };
+      })();
+    });
+    const result = await runTool("codebase_warpsearch", { search_term: "auth" }, { cwd: "/repo" });
+    expect(calls).toBe(2);
+    expect(toolText(result)).toContain('<file path="src/auth.ts" lines="1-5">');
+    expect(toolText(result)).not.toContain("Search failed");
+  });
+
+  test("codebase search gives up after transient overload retry budget", async () => {
+    setMorphApiKey("sk-test");
+    initMorphClients();
+    let calls = 0;
+    setWarpExecute(() => {
+      calls++;
+      return (async function* () {
+        return { success: false, error: "429 Service overloaded, please retry shortly." };
+      })();
+    });
+    const result = await runTool("codebase_warpsearch", { search_term: "auth" }, { cwd: "/repo" });
+    expect(calls).toBe(4);
+    expect(toolText(result)).toContain("Search failed");
+    expect(toolText(result)).toContain("429 Service overloaded");
+  });
+
   test("github search returns the locator error for an invalid target", async () => {
     setMorphApiKey("sk-test");
     initMorphClients();
@@ -1329,6 +1370,35 @@ describe("warpgrep execute", () => {
     );
   });
 
+  test("github search retries a transient overload result and formats the successful retry", async () => {
+    setMorphApiKey("sk-test");
+    initMorphClients();
+    let calls = 0;
+    setWarpSearchGitHub(async () => {
+      calls++;
+      if (calls === 1) {
+        return { success: false, error: "429 Service overloaded, please retry shortly." };
+      }
+      return { success: true, contexts: [{ file: "src/auth.ts", content: "code", lines: [[1, 5]] }] };
+    });
+    await withFetch(
+      async (input: unknown) => {
+        const url = String(input);
+        if (url.includes("/search/repositories")) {
+          return { ok: true, status: 200, json: async () => ({ items: [] }) };
+        }
+        return { ok: true, status: 200, json: async () => ({ full_name: "o/r", default_branch: "main", html_url: "https://github.com/o/r" }) };
+      },
+      async () => {
+        const result = await runTool("github_warpsearch", { search_term: "auth", owner_repo: "o/r" }, {});
+        expect(calls).toBe(2);
+        const text = toolText(result);
+        expect(text).toMatch(/^Repository: o\/r/);
+        expect(text).toContain('<file path="src/auth.ts" lines="1-5">');
+      },
+    );
+  });
+
   test("codebase search rejects when the signal aborts during the generator path", async () => {
     setMorphApiKey("sk-test");
     initMorphClients();
@@ -1349,6 +1419,42 @@ describe("warpgrep execute", () => {
         controller.signal,
       ),
     ).rejects.toThrow();
+  });
+
+  test("codebase search rejects promptly when canceled during transient overload backoff", async () => {
+    setMorphApiKey("sk-test");
+    initMorphClients();
+    const controller = new AbortController();
+    setWarpExecute(() =>
+      (async function* () {
+        return { success: false, error: "429 Service overloaded, please retry shortly." };
+      })(),
+    );
+    const pending = runTool(
+      "codebase_warpsearch",
+      { search_term: "auth" },
+      { cwd: "/repo" },
+      undefined,
+      controller.signal,
+    );
+    // Surface settlement so pending's rejection is always handled, and bound
+    // the wait: the abort must land while the tool is asleep in the 250ms
+    // backoff after the first transient result. A non-abortable sleep would
+    // keep pending unsettled past the 200ms sentinel, failing the test.
+    const settled = pending.then(
+      () => "resolved" as const,
+      () => "rejected" as const,
+    );
+    try {
+      setTimeout(() => controller.abort(), 0);
+      const outcome = await Promise.race([
+        settled,
+        new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 200)),
+      ]);
+      expect(outcome).toBe("rejected");
+    } finally {
+      await settled;
+    }
   });
 
   test("github search rejects when the signal aborts during searchGitHub", async () => {

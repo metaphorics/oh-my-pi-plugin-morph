@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-07-01
+
+### Fixed
+
+- Added bounded transient-overload retries for WarpGrep searches so 429 Morph overload responses do not fail a tool call before the retry budget is exhausted.
+
 ## [0.3.1] - 2026-06-28
 
 ### Changed

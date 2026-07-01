@@ -8,7 +8,7 @@ import type {
   ToolDefinition,
 } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/types";
 import { throwIfAborted, ToolAbortError } from "@oh-my-pi/pi-coding-agent/tools/tool-errors";
-import { MORPH_API_KEY, MORPH_WARPGREP_ENABLED } from "../config.js";
+import { MORPH_API_KEY, MORPH_WARPGREP_ENABLED, MORPH_WARP_GREP_TIMEOUT } from "../config.js";
 import { textToolResult } from "../compaction.js";
 import {
   fetchGitHubRepoSuggestions,
@@ -21,6 +21,7 @@ import { formatWarpGrepResult } from "../format.js";
 import { warpGrep } from "../morph-clients.js";
 import { withToolNote } from "../routing.js";
 import { raceAbort } from "../abort.js";
+import { nextMorphRetryDelay, transientMorphFailureMessage, waitForMorphRetry } from "../retry.js";
 
 const CODEBASE_DESCRIPTION = `Fast agentic codebase search. Uses ripgrep, file reading, and directory listing across multiple turns to find relevant code contexts.
 
@@ -71,26 +72,24 @@ export function makeWarpgrepCodebase(pi: ExtensionAPI) {
 To use codebase_warpsearch, set the MORPH_API_KEY environment variable.
 Get your API key at: https://morphllm.com/dashboard/api-keys`);
       }
+      const client = warpGrep;
 
       const startTime = Date.now();
 
-      try {
-        throwIfAborted(signal);
-        const generator = warpGrep.execute({
+      // Drains one fresh WarpGrep generator to completion, forwarding turn
+      // updates as they stream in. Invoked again for each retry attempt.
+      async function runAttempt(): Promise<{ result: WarpGrepResult; turnCount: number }> {
+        const generator = client.execute({
           searchTerm: params.search_term,
           repoRoot: ctx.cwd,
           streamSteps: true,
         });
-
         let turnCount = 0;
-        let result: WarpGrepResult;
-
         for (;;) {
           throwIfAborted(signal);
           const { value, done } = await raceAbort(generator.next(), signal);
           if (done) {
-            result = await Promise.resolve(value);
-            break;
+            return { result: await Promise.resolve(value), turnCount };
           }
           turnCount = value.turn;
           onUpdate?.(
@@ -100,15 +99,51 @@ Get your API key at: https://morphllm.com/dashboard/api-keys`);
             `WarpGrep turn ${value.turn}: ${value.toolCalls?.map((tc) => tc.name).join(", ") ?? "..."}`,
           );
         }
+      }
 
-        const duration = Date.now() - startTime;
-        const contextCount = result.contexts?.length ?? 0;
+      const retryStartTime = Date.now();
+      let attemptIndex = 0;
+      try {
+        for (;;) {
+          throwIfAborted(signal);
+          let attempt: { result: WarpGrepResult; turnCount: number };
+          try {
+            attempt = await runAttempt();
+          } catch (error) {
+            const transientMessage = transientMorphFailureMessage(error);
+            if (transientMessage === undefined) throw error;
+            const delayMs = nextMorphRetryDelay(attemptIndex, retryStartTime, MORPH_WARP_GREP_TIMEOUT);
+            if (delayMs === undefined) throw error;
+            pi.logger.warn(
+              `WarpGrep transient overload on attempt ${attemptIndex + 1}; retrying in ${delayMs}ms: ${transientMessage}`,
+            );
+            await waitForMorphRetry(delayMs, signal);
+            attemptIndex++;
+            continue;
+          }
 
-        pi.logger.info(
-          `WarpGrep: ${contextCount} contexts in ${turnCount} turns (${duration}ms)`,
-        );
+          const { result, turnCount } = attempt;
+          const transientMessage = transientMorphFailureMessage(result);
+          const delayMs =
+            transientMessage === undefined ? undefined : nextMorphRetryDelay(attemptIndex, retryStartTime, MORPH_WARP_GREP_TIMEOUT);
+          if (delayMs !== undefined) {
+            pi.logger.warn(
+              `WarpGrep transient overload on attempt ${attemptIndex + 1}; retrying in ${delayMs}ms: ${transientMessage}`,
+            );
+            await waitForMorphRetry(delayMs, signal);
+            attemptIndex++;
+            continue;
+          }
 
-        return textToolResult(formatWarpGrepResult(result));
+          const duration = Date.now() - startTime;
+          const contextCount = result.contexts?.length ?? 0;
+
+          pi.logger.info(
+            `WarpGrep: ${contextCount} contexts in ${turnCount} turns (${duration}ms)`,
+          );
+
+          return textToolResult(formatWarpGrepResult(result));
+        }
       } catch (error) {
         if (
           error instanceof ToolAbortError ||
@@ -208,28 +243,58 @@ Get your API key at: https://morphllm.com/dashboard/api-keys`);
         pi.logger.warn(`GitHub repo lookup unavailable for ${repo}: ${repoLookup.detail}`);
       }
 
+      const retryStartTime = Date.now();
+      let attemptIndex = 0;
       try {
-        throwIfAborted(signal);
-        const result = await raceAbort(
-          warpGrep.searchGitHub({
-            searchTerm: params.search_term,
-            github: repo,
-            branch: params.branch,
-          }),
-          signal,
-        );
-        throwIfAborted(signal);
+        for (;;) {
+          throwIfAborted(signal);
+          let result: WarpGrepResult;
+          try {
+            result = await raceAbort(
+              warpGrep.searchGitHub({
+                searchTerm: params.search_term,
+                github: repo,
+                branch: params.branch,
+              }),
+              signal,
+            );
+          } catch (error) {
+            const transientMessage = transientMorphFailureMessage(error);
+            if (transientMessage === undefined) throw error;
+            const delayMs = nextMorphRetryDelay(attemptIndex, retryStartTime, MORPH_WARP_GREP_TIMEOUT);
+            if (delayMs === undefined) throw error;
+            pi.logger.warn(
+              `Public repo WarpGrep transient overload for ${repo} on attempt ${attemptIndex + 1}; retrying in ${delayMs}ms: ${transientMessage}`,
+            );
+            await waitForMorphRetry(delayMs, signal);
+            attemptIndex++;
+            continue;
+          }
+          throwIfAborted(signal);
 
-        const duration = Date.now() - startTime;
-        const contextCount = result.contexts?.length ?? 0;
+          const transientMessage = transientMorphFailureMessage(result);
+          const delayMs =
+            transientMessage === undefined ? undefined : nextMorphRetryDelay(attemptIndex, retryStartTime, MORPH_WARP_GREP_TIMEOUT);
+          if (delayMs !== undefined) {
+            pi.logger.warn(
+              `Public repo WarpGrep transient overload for ${repo} on attempt ${attemptIndex + 1}; retrying in ${delayMs}ms: ${transientMessage}`,
+            );
+            await waitForMorphRetry(delayMs, signal);
+            attemptIndex++;
+            continue;
+          }
 
-        pi.logger.info(`Public repo context: ${repo} → ${contextCount} contexts (${duration}ms)`);
+          const duration = Date.now() - startTime;
+          const contextCount = result.contexts?.length ?? 0;
 
-        if (!result.success) {
-          return textToolResult(formatPublicRepoSearchFailure(repo, params.branch, result.error));
+          pi.logger.info(`Public repo context: ${repo} → ${contextCount} contexts (${duration}ms)`);
+
+          if (!result.success) {
+            return textToolResult(formatPublicRepoSearchFailure(repo, params.branch, result.error));
+          }
+
+          return textToolResult(`Repository: ${repo}\n\n${formatWarpGrepResult(result)}`);
         }
-
-        return textToolResult(`Repository: ${repo}\n\n${formatWarpGrepResult(result)}`);
       } catch (error) {
         if (
           error instanceof ToolAbortError ||

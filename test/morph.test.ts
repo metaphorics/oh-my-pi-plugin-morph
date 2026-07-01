@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, test } from "bun:test";
-import type { CompactResult } from "@morphllm/morphsdk";
+import type { ApplyEditResult, CompactResult } from "@morphllm/morphsdk";
 import type {
   AgentToolResult,
   ExtensionAPI,
@@ -10,7 +10,7 @@ import * as zod from "zod/v4";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { COMPACT_RATIO, EXISTING_CODE_MARKER, FASTCOMPACT_MAX_BYTES, FASTCOMPACT_MAX_LOCATIONS, FASTCOMPACT_MAX_QUERY_BYTES, GITHUB_REPO_SUGGESTION_LIMIT, MORPH_ROUTING_HINT_HEADER, setMorphApiKey } from "../src/config.js";
+import { COMPACT_RATIO, EXISTING_CODE_MARKER, FASTCOMPACT_MAX_BYTES, FASTCOMPACT_MAX_LOCATIONS, FASTCOMPACT_MAX_QUERY_BYTES, GITHUB_REPO_SUGGESTION_LIMIT, MORPH_ROUTING_HINT_HEADER, MORPH_WARP_GREP_TIMEOUT, setMorphApiKey } from "../src/config.js";
 import { compactClient, initMorphClients, morph, warpGrep } from "../src/morph-clients.js";
 import { makeBeforeCompact, serializeAgentMessagesForMorph } from "../src/compaction.js";
 import {
@@ -729,6 +729,76 @@ describe("compaction bridge", () => {
     });
     expect(capturedQuery).toBe("focus on auth");
   });
+  test("retries a transient overload and returns the successful retry", async () => {
+    setMorphApiKey("sk-test");
+    initMorphClients();
+    const client = requireCompactClient();
+    let calls = 0;
+    client.compact = async (input) => {
+      calls++;
+      if (calls === 1) {
+        throw new Error("429 Service overloaded, please retry shortly.");
+      }
+      return morphResult("SUMMARY");
+    };
+    const { pi } = fakePi();
+    const ctx = { hasUI: false };
+    const handler = makeBeforeCompact(pi);
+
+    await expect(handler(compactEvent([textMsg("user", "hi")]), ctx as never)).resolves.toEqual({
+      compaction: { summary: "SUMMARY", firstKeptEntryId: "e1", tokensBefore: 1234 },
+    });
+    expect(calls).toBe(2);
+  });
+
+  test("falls back to native after transient overload retry budget", async () => {
+    setMorphApiKey("sk-test");
+    initMorphClients();
+    const client = requireCompactClient();
+    let calls = 0;
+    client.compact = async () => {
+      calls++;
+      throw new Error("429 Service overloaded, please retry shortly.");
+    };
+    const { pi } = fakePi();
+    const ctx = { hasUI: false };
+    const handler = makeBeforeCompact(pi);
+
+    await expect(handler(compactEvent([textMsg("user", "hi")]), ctx as never)).resolves.toBeUndefined();
+    expect(calls).toBe(4);
+  });
+
+  test("aborts during transient retry backoff instead of falling back", async () => {
+    setMorphApiKey("sk-test");
+    initMorphClients();
+    const client = requireCompactClient();
+    client.compact = async () => {
+      throw new Error("429 Service overloaded, please retry shortly.");
+    };
+    const { pi } = fakePi();
+    const controller = new AbortController();
+    const event = compactEvent([textMsg("user", "hi")]);
+    Object.assign(event, { signal: controller.signal });
+    const handler = makeBeforeCompact(pi);
+    const pending = handler(event, { hasUI: false } as never);
+    // Surface settlement so pending's rejection is always handled, and bound
+    // the wait: the abort must land while the handler is asleep in the 250ms
+    // backoff after the first transient failure. A non-abortable sleep would
+    // keep pending unsettled past the 200ms sentinel, failing the test.
+    const settled = pending.then(
+      () => "resolved" as const,
+      () => "rejected" as const,
+    );
+    const { promise: timeoutPromise, resolve: resolveTimeout } = Promise.withResolvers<"timeout">();
+    try {
+      setTimeout(() => controller.abort(), 0);
+      setTimeout(() => resolveTimeout("timeout"), 200);
+      const outcome = await Promise.race([settled, timeoutPromise]);
+      expect(outcome).toBe("rejected");
+    } finally {
+      await settled;
+    }
+  });
 });
 
 describe("extension wiring", () => {
@@ -1112,6 +1182,178 @@ describe("fast_edit execute", () => {
       expect(existsSync(join(dir, "rollback.ts"))).toBe(false);
     });
   });
+  test("rejects promptly via raceAbort when the signal aborts while applyEdit is hanging", async () => {
+    // Regression test: applyEdit must be raced against the abort signal, not
+    // merely checked before/after — otherwise a cancel during a stuck remote
+    // call blocks until the SDK call itself settles (which may never happen
+    // in this stub, proving the race actually short-circuits it).
+    setMorphApiKey("sk-test");
+    initMorphClients();
+    const { promise: stubCalled, resolve: markStubCalled } = Promise.withResolvers<void>();
+    setApplyEdit(async () => {
+      markStubCalled();
+      return Promise.withResolvers<ApplyEditResult>().promise; // never settles
+    });
+    const controller = new AbortController();
+    await withTempDir(async (dir) => {
+      const original = "export const x = 1;\nexport const y = 1;\n";
+      writeFileSync(join(dir, "hang.ts"), original);
+      const pending = runTool(
+        "fast_edit",
+        {
+          target_filepath: "hang.ts",
+          instructions: "bump",
+          code_edit: `${EXISTING_CODE_MARKER}\nexport const x = 2;\n${EXISTING_CODE_MARKER}`,
+        },
+        { cwd: dir },
+        undefined,
+        controller.signal,
+      );
+      pending.catch(() => {});
+      await stubCalled;
+      controller.abort();
+      await expect(pending).rejects.toThrow();
+      expect(readFileSync(join(dir, "hang.ts"), "utf8")).toBe(original);
+    });
+  });
+  test("retries a thrown transient overload and applies the successful retry", async () => {
+    setMorphApiKey("sk-test");
+    initMorphClients();
+    const merged = "export const x = 2;\nexport const y = 3;\n";
+    let calls = 0;
+    setApplyEdit(async () => {
+      calls++;
+      if (calls === 1) {
+        throw new Error("429 Service overloaded, please retry shortly.");
+      }
+      return {
+        success: true,
+        mergedCode: merged,
+        udiff: "@@ -1 +1 @@\n-export const x = 1;\n+export const x = 2;",
+        changes: { linesAdded: 1, linesRemoved: 1 },
+      };
+    });
+    await withTempDir(async (dir) => {
+      writeFileSync(join(dir, "retry-throw.ts"), "export const x = 1;\nexport const y = 1;\n");
+      const result = await runTool(
+        "fast_edit",
+        {
+          target_filepath: "retry-throw.ts",
+          instructions: "bump",
+          code_edit: `${EXISTING_CODE_MARKER}\nexport const x = 2;\n${EXISTING_CODE_MARKER}`,
+        },
+        { cwd: dir },
+      );
+      expect(calls).toBe(2);
+      expect(result.isError).toBeFalsy();
+      expect(toolText(result)).toContain("Applied edit to");
+      expect(readFileSync(join(dir, "retry-throw.ts"), "utf8")).toBe(merged);
+    });
+  });
+
+  test("retries a returned transient overload result and applies the successful retry", async () => {
+    setMorphApiKey("sk-test");
+    initMorphClients();
+    const merged = "export const x = 2;\nexport const y = 3;\n";
+    let calls = 0;
+    setApplyEdit(async () => {
+      calls++;
+      if (calls === 1) {
+        return { success: false, error: "429 Service overloaded, please retry shortly." };
+      }
+      return {
+        success: true,
+        mergedCode: merged,
+        udiff: "@@ -1 +1 @@\n-export const x = 1;\n+export const x = 2;",
+        changes: { linesAdded: 1, linesRemoved: 1 },
+      };
+    });
+    await withTempDir(async (dir) => {
+      writeFileSync(join(dir, "retry-result.ts"), "export const x = 1;\nexport const y = 1;\n");
+      const result = await runTool(
+        "fast_edit",
+        {
+          target_filepath: "retry-result.ts",
+          instructions: "bump",
+          code_edit: `${EXISTING_CODE_MARKER}\nexport const x = 2;\n${EXISTING_CODE_MARKER}`,
+        },
+        { cwd: dir },
+      );
+      expect(calls).toBe(2);
+      expect(result.isError).toBeFalsy();
+      expect(toolText(result)).toContain("Applied edit to");
+      expect(readFileSync(join(dir, "retry-result.ts"), "utf8")).toBe(merged);
+    });
+  });
+
+  test("retries the SDK's actual rate-limit message shape (no literal 429 in text)", async () => {
+    // Regression test: @morphllm/morphsdk's fastapply callMorphAPI rewrites a
+    // real HTTP 429 into `{success:false, error:"Rate limited: You've
+    // exceeded..."}` with no "429" substring anywhere in the text (see
+    // apply.cjs). The classifier must catch this exact shape, not just a
+    // synthetic message that happens to contain "429".
+    setMorphApiKey("sk-test");
+    initMorphClients();
+    const merged = "export const x = 2;\nexport const y = 3;\n";
+    let calls = 0;
+    setApplyEdit(async () => {
+      calls++;
+      if (calls === 1) {
+        return {
+          success: false,
+          error:
+            "Rate limited: You've exceeded your Morph API usage limits. Please visit https://morphllm.com to check your plan and purchase additional credits.",
+        };
+      }
+      return {
+        success: true,
+        mergedCode: merged,
+        udiff: "@@ -1 +1 @@\n-export const x = 1;\n+export const x = 2;",
+        changes: { linesAdded: 1, linesRemoved: 1 },
+      };
+    });
+    await withTempDir(async (dir) => {
+      writeFileSync(join(dir, "retry-ratelimit.ts"), "export const x = 1;\nexport const y = 1;\n");
+      const result = await runTool(
+        "fast_edit",
+        {
+          target_filepath: "retry-ratelimit.ts",
+          instructions: "bump",
+          code_edit: `${EXISTING_CODE_MARKER}\nexport const x = 2;\n${EXISTING_CODE_MARKER}`,
+        },
+        { cwd: dir },
+      );
+      expect(calls).toBe(2);
+      expect(result.isError).toBeFalsy();
+      expect(toolText(result)).toContain("Applied edit to");
+      expect(readFileSync(join(dir, "retry-ratelimit.ts"), "utf8")).toBe(merged);
+    });
+  });
+
+  test("gives up after transient overload retry budget", async () => {
+    setMorphApiKey("sk-test");
+    initMorphClients();
+    let calls = 0;
+    setApplyEdit(async () => {
+      calls++;
+      throw new Error("429 Service overloaded, please retry shortly.");
+    });
+    await withTempDir(async (dir) => {
+      writeFileSync(join(dir, "retry-exhaust.ts"), "export const x = 1;\nexport const y = 1;\n");
+      const result = await runTool(
+        "fast_edit",
+        {
+          target_filepath: "retry-exhaust.ts",
+          instructions: "bump",
+          code_edit: `${EXISTING_CODE_MARKER}\nexport const x = 2;\n${EXISTING_CODE_MARKER}`,
+        },
+        { cwd: dir },
+      );
+      expect(calls).toBe(4);
+      expect(result.isError).toBe(true);
+      expect(toolText(result)).toContain("429 Service overloaded");
+    });
+  });
 });
 
 describe("GitHub helpers", () => {
@@ -1247,6 +1489,47 @@ describe("warpgrep execute", () => {
     expect(toolText(result)).toContain("warp exploded");
   });
 
+  test("codebase search retries a transient overload result and formats the successful retry", async () => {
+    setMorphApiKey("sk-test");
+    initMorphClients();
+    let calls = 0;
+    setWarpExecute(() => {
+      calls++;
+      if (calls === 1) {
+        return (async function* () {
+          return {
+            success: false,
+            error:
+              "Search did not complete: terminated. Errors: 429 Service overloaded, please retry shortly.",
+          };
+        })();
+      }
+      return (async function* () {
+        return { success: true, contexts: [{ file: "src/auth.ts", content: "code", lines: [[1, 5]] }] };
+      })();
+    });
+    const result = await runTool("codebase_warpsearch", { search_term: "auth" }, { cwd: "/repo" });
+    expect(calls).toBe(2);
+    expect(toolText(result)).toContain('<file path="src/auth.ts" lines="1-5">');
+    expect(toolText(result)).not.toContain("Search failed");
+  });
+
+  test("codebase search gives up after transient overload retry budget", async () => {
+    setMorphApiKey("sk-test");
+    initMorphClients();
+    let calls = 0;
+    setWarpExecute(() => {
+      calls++;
+      return (async function* () {
+        return { success: false, error: "429 Service overloaded, please retry shortly." };
+      })();
+    });
+    const result = await runTool("codebase_warpsearch", { search_term: "auth" }, { cwd: "/repo" });
+    expect(calls).toBe(4);
+    expect(toolText(result)).toContain("Search failed");
+    expect(toolText(result)).toContain("429 Service overloaded");
+  });
+
   test("github search returns the locator error for an invalid target", async () => {
     setMorphApiKey("sk-test");
     initMorphClients();
@@ -1329,6 +1612,72 @@ describe("warpgrep execute", () => {
     );
   });
 
+  test("github search retries a transient overload result and formats the successful retry", async () => {
+    setMorphApiKey("sk-test");
+    initMorphClients();
+    let calls = 0;
+    setWarpSearchGitHub(async () => {
+      calls++;
+      if (calls === 1) {
+        return { success: false, error: "429 Service overloaded, please retry shortly." };
+      }
+      return { success: true, contexts: [{ file: "src/auth.ts", content: "code", lines: [[1, 5]] }] };
+    });
+    await withFetch(
+      async (input: unknown) => {
+        const url = String(input);
+        if (url.includes("/search/repositories")) {
+          return { ok: true, status: 200, json: async () => ({ items: [] }) };
+        }
+        return { ok: true, status: 200, json: async () => ({ full_name: "o/r", default_branch: "main", html_url: "https://github.com/o/r" }) };
+      },
+      async () => {
+        const result = await runTool("github_warpsearch", { search_term: "auth", owner_repo: "o/r" }, {});
+        expect(calls).toBe(2);
+        const text = toolText(result);
+        expect(text).toMatch(/^Repository: o\/r/);
+        expect(text).toContain('<file path="src/auth.ts" lines="1-5">');
+      },
+    );
+  });
+
+  test("github search retry budget is not consumed by slow repo preflight", async () => {
+    setMorphApiKey("sk-test");
+    initMorphClients();
+    const realNow = Date.now;
+    let now = 0;
+    Date.now = () => now;
+    try {
+      let calls = 0;
+      setWarpSearchGitHub(async () => {
+        calls++;
+        if (calls === 1) {
+          return { success: false, error: "429 Service overloaded, please retry shortly." };
+        }
+        return { success: true, contexts: [{ file: "src/auth.ts", content: "code", lines: [[1, 5]] }] };
+      });
+      await withFetch(
+        async (input: unknown) => {
+          const url = String(input);
+          if (url.includes("/search/repositories")) {
+            return { ok: true, status: 200, json: async () => ({ items: [] }) };
+          }
+          now = MORPH_WARP_GREP_TIMEOUT - 100;
+          return { ok: true, status: 200, json: async () => ({ full_name: "o/r", default_branch: "main", html_url: "https://github.com/o/r" }) };
+        },
+        async () => {
+          const result = await runTool("github_warpsearch", { search_term: "auth", owner_repo: "o/r" }, {});
+          expect(calls).toBe(2);
+          const text = toolText(result);
+          expect(text).toMatch(/^Repository: o\/r/);
+          expect(text).toContain('<file path="src/auth.ts" lines="1-5">');
+        },
+      );
+    } finally {
+      Date.now = realNow;
+    }
+  });
+
   test("codebase search rejects when the signal aborts during the generator path", async () => {
     setMorphApiKey("sk-test");
     initMorphClients();
@@ -1349,6 +1698,42 @@ describe("warpgrep execute", () => {
         controller.signal,
       ),
     ).rejects.toThrow();
+  });
+
+  test("codebase search rejects promptly when canceled during transient overload backoff", async () => {
+    setMorphApiKey("sk-test");
+    initMorphClients();
+    const controller = new AbortController();
+    setWarpExecute(() =>
+      (async function* () {
+        return { success: false, error: "429 Service overloaded, please retry shortly." };
+      })(),
+    );
+    const pending = runTool(
+      "codebase_warpsearch",
+      { search_term: "auth" },
+      { cwd: "/repo" },
+      undefined,
+      controller.signal,
+    );
+    // Surface settlement so pending's rejection is always handled, and bound
+    // the wait: the abort must land while the tool is asleep in the 250ms
+    // backoff after the first transient result. A non-abortable sleep would
+    // keep pending unsettled past the 200ms sentinel, failing the test.
+    const settled = pending.then(
+      () => "resolved" as const,
+      () => "rejected" as const,
+    );
+    try {
+      setTimeout(() => controller.abort(), 0);
+      const outcome = await Promise.race([
+        settled,
+        new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 200)),
+      ]);
+      expect(outcome).toBe("rejected");
+    } finally {
+      await settled;
+    }
   });
 
   test("github search rejects when the signal aborts during searchGitHub", async () => {
@@ -1782,6 +2167,68 @@ describe("fastcompact execute", () => {
         runTool("fastcompact", { location: "doc.txt" }, { cwd: dir }, undefined, controller.signal),
       ).rejects.toThrow();
       expect(calls).toHaveLength(1);
+    });
+  });
+  test("retries a transient overload and returns the successful retry", async () => {
+    setMorphApiKey("sk-test");
+    initMorphClients();
+    let calls = 0;
+    stubCompact(() => {
+      calls++;
+      if (calls === 1) {
+        throw new Error("429 Service overloaded, please retry shortly.");
+      }
+      return fakeResult("COMPACTED");
+    });
+    await withTempDir(async (dir) => {
+      writeFileSync(join(dir, "retry.txt"), "content to compact\n");
+      const result = await runTool("fastcompact", { location: "retry.txt" }, { cwd: dir });
+      expect(calls).toBe(2);
+      expect(result.isError).toBeFalsy();
+      expect(toolText(result)).toBe("COMPACTED");
+    });
+  });
+
+  test("gives up after transient overload retry budget", async () => {
+    setMorphApiKey("sk-test");
+    initMorphClients();
+    let calls = 0;
+    stubCompact(() => {
+      calls++;
+      throw new Error("429 Service overloaded, please retry shortly.");
+    });
+    await withTempDir(async (dir) => {
+      writeFileSync(join(dir, "exhaust.txt"), "content to compact\n");
+      const result = await runTool("fastcompact", { location: "exhaust.txt" }, { cwd: dir });
+      expect(calls).toBe(4);
+      expect(result.isError).toBe(true);
+      expect(toolText(result)).toContain("fastcompact failed:");
+      expect(toolText(result)).toContain("429 Service overloaded");
+    });
+  });
+
+  test("shares one retry budget across locations for the whole call", async () => {
+    setMorphApiKey("sk-test");
+    initMorphClients();
+    let calls = 0;
+    stubCompact(() => {
+      calls++;
+      if (calls <= 3) {
+        throw new Error("429 Service overloaded, please retry shortly.");
+      }
+      if (calls === 4) {
+        return fakeResult("LOC1_OK");
+      }
+      throw new Error("429 Service overloaded, please retry shortly.");
+    });
+    await withTempDir(async (dir) => {
+      writeFileSync(join(dir, "loc1.txt"), "loc1\n");
+      writeFileSync(join(dir, "loc2.txt"), "loc2\n");
+      const result = await runTool("fastcompact", { locations: ["loc1.txt", "loc2.txt"] }, { cwd: dir });
+      expect(calls).toBe(5);
+      expect(result.isError).toBe(true);
+      expect(toolText(result)).toContain("fastcompact failed:");
+      expect(toolText(result)).toContain("429 Service overloaded");
     });
   });
 });

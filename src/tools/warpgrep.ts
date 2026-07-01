@@ -101,6 +101,7 @@ Get your API key at: https://morphllm.com/dashboard/api-keys`);
         }
       }
 
+      const retryStartTime = Date.now();
       let attemptIndex = 0;
       try {
         for (;;) {
@@ -111,7 +112,7 @@ Get your API key at: https://morphllm.com/dashboard/api-keys`);
           } catch (error) {
             const transientMessage = transientMorphFailureMessage(error);
             if (transientMessage === undefined) throw error;
-            const delayMs = nextMorphRetryDelay(attemptIndex, startTime, MORPH_WARP_GREP_TIMEOUT);
+            const delayMs = nextMorphRetryDelay(attemptIndex, retryStartTime, MORPH_WARP_GREP_TIMEOUT);
             if (delayMs === undefined) throw error;
             pi.logger.warn(
               `WarpGrep transient overload on attempt ${attemptIndex + 1}; retrying in ${delayMs}ms: ${transientMessage}`,
@@ -124,7 +125,7 @@ Get your API key at: https://morphllm.com/dashboard/api-keys`);
           const { result, turnCount } = attempt;
           const transientMessage = transientMorphFailureMessage(result);
           const delayMs =
-            transientMessage === undefined ? undefined : nextMorphRetryDelay(attemptIndex, startTime, MORPH_WARP_GREP_TIMEOUT);
+            transientMessage === undefined ? undefined : nextMorphRetryDelay(attemptIndex, retryStartTime, MORPH_WARP_GREP_TIMEOUT);
           if (delayMs !== undefined) {
             pi.logger.warn(
               `WarpGrep transient overload on attempt ${attemptIndex + 1}; retrying in ${delayMs}ms: ${transientMessage}`,
@@ -242,6 +243,7 @@ Get your API key at: https://morphllm.com/dashboard/api-keys`);
         pi.logger.warn(`GitHub repo lookup unavailable for ${repo}: ${repoLookup.detail}`);
       }
 
+      const retryStartTime = Date.now();
       let attemptIndex = 0;
       try {
         for (;;) {
@@ -259,7 +261,7 @@ Get your API key at: https://morphllm.com/dashboard/api-keys`);
           } catch (error) {
             const transientMessage = transientMorphFailureMessage(error);
             if (transientMessage === undefined) throw error;
-            const delayMs = nextMorphRetryDelay(attemptIndex, startTime, MORPH_WARP_GREP_TIMEOUT);
+            const delayMs = nextMorphRetryDelay(attemptIndex, retryStartTime, MORPH_WARP_GREP_TIMEOUT);
             if (delayMs === undefined) throw error;
             pi.logger.warn(
               `Public repo WarpGrep transient overload for ${repo} on attempt ${attemptIndex + 1}; retrying in ${delayMs}ms: ${transientMessage}`,
@@ -272,7 +274,7 @@ Get your API key at: https://morphllm.com/dashboard/api-keys`);
 
           const transientMessage = transientMorphFailureMessage(result);
           const delayMs =
-            transientMessage === undefined ? undefined : nextMorphRetryDelay(attemptIndex, startTime, MORPH_WARP_GREP_TIMEOUT);
+            transientMessage === undefined ? undefined : nextMorphRetryDelay(attemptIndex, retryStartTime, MORPH_WARP_GREP_TIMEOUT);
           if (delayMs !== undefined) {
             pi.logger.warn(
               `Public repo WarpGrep transient overload for ${repo} on attempt ${attemptIndex + 1}; retrying in ${delayMs}ms: ${transientMessage}`,

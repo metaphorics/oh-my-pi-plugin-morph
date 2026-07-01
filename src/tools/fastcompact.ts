@@ -243,8 +243,8 @@ Alternatively, read the location with the native 'read' tool.`, true);
 
         const sections: string[] = [];
         const startTime = Date.now();
+        let attemptIndex = 0;
         for (const text of resolved) {
-          let attemptIndex = 0;
           let result: CompactResult;
           for (;;) {
             throwIfAborted(signal);

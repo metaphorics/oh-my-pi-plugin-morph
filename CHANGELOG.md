@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-07-01
+
+### Fixed
+
+- Made `fastcompact`'s transient-overload retry budget span the whole tool call: the per-attempt counter is now shared across every compacted location alongside the existing shared timeout clock, matching the documented whole-call budget instead of granting each later location a fresh retry allowance against an already-overloaded Morph.
+- Stopped GitHub and repository preflight latency from consuming WarpGrep's Morph retry budget: each retry loop now measures its backoff window from the first Morph attempt rather than from before the repo lookup, so a slow preflight no longer eats the retry allowance.
+
 ## [0.3.3] - 2026-07-01
 
 ### Added

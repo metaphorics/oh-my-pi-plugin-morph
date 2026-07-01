@@ -10,7 +10,7 @@ import * as zod from "zod/v4";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { COMPACT_RATIO, EXISTING_CODE_MARKER, FASTCOMPACT_MAX_BYTES, FASTCOMPACT_MAX_LOCATIONS, FASTCOMPACT_MAX_QUERY_BYTES, GITHUB_REPO_SUGGESTION_LIMIT, MORPH_ROUTING_HINT_HEADER, setMorphApiKey } from "../src/config.js";
+import { COMPACT_RATIO, EXISTING_CODE_MARKER, FASTCOMPACT_MAX_BYTES, FASTCOMPACT_MAX_LOCATIONS, FASTCOMPACT_MAX_QUERY_BYTES, GITHUB_REPO_SUGGESTION_LIMIT, MORPH_ROUTING_HINT_HEADER, MORPH_WARP_GREP_TIMEOUT, setMorphApiKey } from "../src/config.js";
 import { compactClient, initMorphClients, morph, warpGrep } from "../src/morph-clients.js";
 import { makeBeforeCompact, serializeAgentMessagesForMorph } from "../src/compaction.js";
 import {
@@ -1641,6 +1641,43 @@ describe("warpgrep execute", () => {
     );
   });
 
+  test("github search retry budget is not consumed by slow repo preflight", async () => {
+    setMorphApiKey("sk-test");
+    initMorphClients();
+    const realNow = Date.now;
+    let now = 0;
+    Date.now = () => now;
+    try {
+      let calls = 0;
+      setWarpSearchGitHub(async () => {
+        calls++;
+        if (calls === 1) {
+          return { success: false, error: "429 Service overloaded, please retry shortly." };
+        }
+        return { success: true, contexts: [{ file: "src/auth.ts", content: "code", lines: [[1, 5]] }] };
+      });
+      await withFetch(
+        async (input: unknown) => {
+          const url = String(input);
+          if (url.includes("/search/repositories")) {
+            return { ok: true, status: 200, json: async () => ({ items: [] }) };
+          }
+          now = MORPH_WARP_GREP_TIMEOUT - 100;
+          return { ok: true, status: 200, json: async () => ({ full_name: "o/r", default_branch: "main", html_url: "https://github.com/o/r" }) };
+        },
+        async () => {
+          const result = await runTool("github_warpsearch", { search_term: "auth", owner_repo: "o/r" }, {});
+          expect(calls).toBe(2);
+          const text = toolText(result);
+          expect(text).toMatch(/^Repository: o\/r/);
+          expect(text).toContain('<file path="src/auth.ts" lines="1-5">');
+        },
+      );
+    } finally {
+      Date.now = realNow;
+    }
+  });
+
   test("codebase search rejects when the signal aborts during the generator path", async () => {
     setMorphApiKey("sk-test");
     initMorphClients();
@@ -2164,6 +2201,31 @@ describe("fastcompact execute", () => {
       writeFileSync(join(dir, "exhaust.txt"), "content to compact\n");
       const result = await runTool("fastcompact", { location: "exhaust.txt" }, { cwd: dir });
       expect(calls).toBe(4);
+      expect(result.isError).toBe(true);
+      expect(toolText(result)).toContain("fastcompact failed:");
+      expect(toolText(result)).toContain("429 Service overloaded");
+    });
+  });
+
+  test("shares one retry budget across locations for the whole call", async () => {
+    setMorphApiKey("sk-test");
+    initMorphClients();
+    let calls = 0;
+    stubCompact(() => {
+      calls++;
+      if (calls <= 3) {
+        throw new Error("429 Service overloaded, please retry shortly.");
+      }
+      if (calls === 4) {
+        return fakeResult("LOC1_OK");
+      }
+      throw new Error("429 Service overloaded, please retry shortly.");
+    });
+    await withTempDir(async (dir) => {
+      writeFileSync(join(dir, "loc1.txt"), "loc1\n");
+      writeFileSync(join(dir, "loc2.txt"), "loc2\n");
+      const result = await runTool("fastcompact", { locations: ["loc1.txt", "loc2.txt"] }, { cwd: dir });
+      expect(calls).toBe(5);
       expect(result.isError).toBe(true);
       expect(toolText(result)).toContain("fastcompact failed:");
       expect(toolText(result)).toContain("429 Service overloaded");

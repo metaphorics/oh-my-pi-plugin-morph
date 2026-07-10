@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.7] - 2026-07-10
+
+### Fixed
+
+- `fastcompact` now treats a blank or whitespace-only `location` as omitted, so callers that serialize every schema field and send `location: ""` alongside a real `locations` array no longer fail with the either-or rejection. A non-empty `location` combined with `locations` is still rejected.
+
 ## [0.3.6] - 2026-07-06
 
 ### Added

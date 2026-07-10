@@ -175,7 +175,12 @@ Alternatively, read the location with the native 'read' tool.`, true);
         }
         const client = compactClient;
 
-        const single = params.location;
+        // A blank or whitespace-only 'location' names no locator. Some callers
+        // serialize every schema field and send location: "" alongside a real
+        // 'locations' array; treat blank as omitted so it cannot trip the
+        // either/or rejection below.
+        const rawLocation = params.location;
+        const single = rawLocation !== undefined && rawLocation.trim() !== "" ? rawLocation : undefined;
         const multi = params.locations;
         if (single !== undefined && multi !== undefined) {
           return textToolResult(

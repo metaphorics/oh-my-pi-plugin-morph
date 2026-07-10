@@ -2365,6 +2365,33 @@ describe("fastcompact execute", () => {
     });
   });
 
+  test("treats an empty locations array as omitted when a location is provided", async () => {
+    setMorphApiKey("sk-test");
+    initMorphClients();
+    const calls = stubCompact(() => fakeResult("COMPACTED"));
+    await withTempDir(async (dir) => {
+      writeFileSync(join(dir, "doc.txt"), "doc body\n");
+
+      const result = await runTool(
+        "fastcompact",
+        { location: "doc.txt", locations: [] },
+        { cwd: dir },
+      );
+      expect(result.isError).toBeFalsy();
+      expect(toolText(result)).toBe("COMPACTED");
+      expect(calls).toHaveLength(1);
+
+      const bothEmpty = await runTool(
+        "fastcompact",
+        { location: "", locations: [] },
+        { cwd: dir },
+      );
+      expect(bothEmpty.isError).toBe(true);
+      expect(toolText(bothEmpty)).toContain("at least one");
+      expect(calls).toHaveLength(1);
+    });
+  });
+
   test("compacts multiple locations in order with labeled sections", async () => {
     setMorphApiKey("sk-test");
     initMorphClients();

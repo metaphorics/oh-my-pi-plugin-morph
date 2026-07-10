@@ -39,7 +39,7 @@ WHEN TO USE fastcompact:
 - Prefer this over reading a large file or long artifact in full when you only need a focused digest before reasoning over it
 - Produce a focused summary of supplied content via an optional 'query'
 
-INPUT MODES:
+INPUT MODES (pass exactly one of 'location' or 'locations' and omit the other field entirely; a blank string or empty array is treated as omitted):
 - location: a single repo-relative file path or an "artifact://<id>" locator
 - locations: an array of such locators, compacted in order with labeled sections
 - query: optional focus to condition the compaction
@@ -136,11 +136,11 @@ export function makeFastCompact(pi: ExtensionAPI) {
     location: z
       .string()
       .optional()
-      .describe('A single repo-relative file path or "artifact://<id>" locator to compact.'),
+      .describe('A single repo-relative file path or "artifact://<id>" locator to compact. Exactly one of location/locations must be provided; omit this field entirely when using locations.'),
     locations: z
       .array(z.string())
       .optional()
-      .describe('Multiple repo-relative file paths or "artifact://<id>" locators, compacted in order.'),
+      .describe('Multiple repo-relative file paths or "artifact://<id>" locators, compacted in order with labeled sections. Exactly one of location/locations must be provided; omit this field entirely when using location.'),
     query: z
       .string()
       .optional()
@@ -175,16 +175,15 @@ Alternatively, read the location with the native 'read' tool.`, true);
         }
         const client = compactClient;
 
-        // A blank or whitespace-only 'location' names no locator. Some callers
-        // serialize every schema field and send location: "" alongside a real
-        // 'locations' array; treat blank as omitted so it cannot trip the
-        // either/or rejection below.
-        const rawLocation = params.location;
-        const single = rawLocation !== undefined && rawLocation.trim() !== "" ? rawLocation : undefined;
-        const multi = params.locations;
+        // Blank 'location' and empty 'locations' name no locator. Some callers
+        // serialize every schema field and send location: "" or locations: []
+        // alongside the real input; treat both as omitted so they cannot trip
+        // the either/or rejection below.
+        const single = params.location?.trim() ? params.location : undefined;
+        const multi = params.locations?.length ? params.locations : undefined;
         if (single !== undefined && multi !== undefined) {
           return textToolResult(
-            "Error: pass either 'location' (single) or 'locations' (multiple), not both.",
+            "Error: pass either 'location' (single) or 'locations' (multiple), not both. Omit the unused field entirely; blank or empty values are ignored.",
             true,
           );
         }
@@ -192,7 +191,7 @@ Alternatively, read the location with the native 'read' tool.`, true);
         const list: string[] = single !== undefined ? [single] : multi ?? [];
         if (list.length === 0) {
           return textToolResult(
-            multi !== undefined
+            params.locations !== undefined
               ? "Error: 'locations' must contain at least one entry."
               : "Error: provide 'location' for a single input or 'locations' for multiple inputs.",
             true,

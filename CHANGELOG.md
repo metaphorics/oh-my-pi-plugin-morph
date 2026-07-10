@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.8] - 2026-07-11
+
+### Fixed
+
+- `fastcompact` now treats an empty `locations` array as omitted, matching the existing blank-`location` handling, so callers that serialize every schema field and send `locations: []` alongside a real `location` no longer fail with the either-or rejection.
+
+### Changed
+
+- Clarified the `fastcompact` schema descriptions, tool prompt, and conflict error: exactly one of `location`/`locations` must be provided, the unused field should be omitted, and blank or empty values are ignored.
+
 ## [0.3.7] - 2026-07-10
 
 ### Fixed

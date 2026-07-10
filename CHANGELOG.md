@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.9] - 2026-07-11
+
+### Added
+
+- Documented the empty-`locations` mutual-exclusion fix for `fastcompact` under `docs/solutions/logic-errors/`.
+
 ## [0.3.8] - 2026-07-11
 
 ### Fixed

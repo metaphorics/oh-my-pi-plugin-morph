@@ -19,7 +19,7 @@ import {
   MORPH_COMPACT_TIMEOUT,
 } from "../config.js";
 import { compactResultText, textToolResult } from "../compaction.js";
-import { resolveFilepath } from "../format.js";
+import { resolveReadPath } from "../format.js";
 import { compactClient } from "../morph-clients.js";
 import { withToolNote } from "../routing.js";
 import { raceAbort } from "../abort.js";
@@ -27,10 +27,10 @@ import { nextMorphRetryDelay, transientMorphFailureMessage, waitForMorphRetry } 
 
 const ARTIFACT_PREFIX = "artifact://";
 
-// Conventional glob metacharacters. A repo-relative location must name one
-// concrete file; any of these means the caller passed a pattern, which would
-// either silently match nothing or, worse, smuggle multiple paths past the
-// single-file containment checks. Reject before resolving.
+// Conventional glob metacharacters. A location must name one concrete file;
+// any of these means the caller passed a pattern, which would either silently
+// match nothing or, worse, smuggle multiple paths past the single-file
+// preflight checks. Reject before resolving.
 const GLOB_RE = /[*?[\]{}]/;
 
 const DESCRIPTION = `Compact one or more file or artifact locations into a shorter, query-focused digest using Morph Compact, and return the compacted text only.
@@ -40,7 +40,7 @@ WHEN TO USE fastcompact:
 - Produce a focused summary of supplied content via an optional 'query'
 
 INPUT MODES (pass exactly one of 'location' or 'locations' and omit the other field entirely; a blank string or empty array is treated as omitted):
-- location: a single repo-relative file path or an "artifact://<id>" locator
+- location: a single file path or an "artifact://<id>" locator
 - locations: an array of such locators, compacted in order with labeled sections
 - query: optional focus to condition the compaction
 - compression_ratio: optional fraction of content to keep (0.05-1.0)
@@ -49,7 +49,7 @@ GUARANTEES:
 - Read-only: never writes to disk, overwrites inputs, saves artifacts, or mutates session history
 - Returns compacted text only; it does NOT compact the conversation (manual /compact and the session compaction hook handle that)
 
-LIMITS: repo-relative paths only (no absolute paths, root escapes, directories, or globs); bounded input size and location count.
+LIMITS: no directories, globs, or secret files (case-sensitive basename match: .env and .env.*, private keys, credential configs); bounded input size and location count. Absolute and out-of-tree paths are allowed.
 
 FALLBACK: If fastcompact is unavailable (no MORPH_API_KEY) or fails, read the location with the native 'read' tool.`;
 
@@ -93,7 +93,8 @@ async function readBoundedFile(absPath: string, label: string): Promise<Resolved
 
 // Resolve a single locator to readable text without ever calling Morph.
 // Artifact locators go through the session manager; everything else is treated
-// as a repo-relative file path and confined to the workspace root.
+// as a file path: secret files are refused and in-tree symlink escapes are
+// blocked, but absolute and out-of-tree reads are allowed.
 async function resolveLocation(
   location: string,
   ctx: ExtensionContext,
@@ -101,7 +102,7 @@ async function resolveLocation(
 ): Promise<ResolvedLocation> {
   const trimmed = location.trim();
   if (!trimmed) {
-    return { error: "Empty location: provide a repo-relative file path or artifact://<id>." };
+    return { error: "Empty location: provide a file path or artifact://<id>." };
   }
 
   if (trimmed.startsWith(ARTIFACT_PREFIX)) {
@@ -118,12 +119,12 @@ async function resolveLocation(
   }
 
   if (GLOB_RE.test(trimmed)) {
-    return { error: `Globs are not allowed: ${location}. Pass one concrete repo-relative file path.` };
+    return { error: `Globs are not allowed: ${location}. Pass one concrete file path.` };
   }
 
   let resolved: string;
   try {
-    resolved = resolveFilepath(trimmed, ctx.cwd);
+    resolved = resolveReadPath(trimmed, ctx.cwd);
   } catch (error) {
     return { error: error instanceof Error ? error.message : String(error) };
   }
@@ -136,11 +137,11 @@ export function makeFastCompact(pi: ExtensionAPI) {
     location: z
       .string()
       .optional()
-      .describe('A single repo-relative file path or "artifact://<id>" locator to compact. Exactly one of location/locations must be provided; omit this field entirely when using locations.'),
+      .describe('A single file path or "artifact://<id>" locator to compact. Exactly one of location/locations must be provided; omit this field entirely when using locations.'),
     locations: z
       .array(z.string())
       .optional()
-      .describe('Multiple repo-relative file paths or "artifact://<id>" locators, compacted in order with labeled sections. Exactly one of location/locations must be provided; omit this field entirely when using location.'),
+      .describe('Multiple file paths or "artifact://<id>" locators, compacted in order with labeled sections. Exactly one of location/locations must be provided; omit this field entirely when using location.'),
     query: z
       .string()
       .optional()

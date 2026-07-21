@@ -17,7 +17,7 @@ export const GITHUB_REPO_SUGGESTION_LIMIT = 5;
 
 export const EXISTING_CODE_MARKER = "// ... existing code ...";
 export const MORPH_ROUTING_HINT_HEADER = "Morph plugin routing hints:";
-export const PLUGIN_VERSION = "0.3.9";
+export const PLUGIN_VERSION = "0.4.0";
 
 export type MorphFastEditModel = "auto" | "morph-v3-fast" | "morph-v3-large";
 export const DEFAULT_MORPH_FAST_EDIT_MODEL: MorphFastEditModel = "auto";

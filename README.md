@@ -92,9 +92,9 @@ Approval tier: `read`.
 
 ### `fastcompact`
 
-Use to condense a specific file or artifact into shorter, query-focused text before reasoning over it. Pass a single `location` (a repo-relative file path or an `artifact://<id>` locator) or a `locations` array compacted in order. Optional `query` focuses the digest and `compression_ratio` overrides the configured ratio.
+Use to condense a specific file or artifact into shorter, query-focused text before reasoning over it. Pass a single `location` (a file path, absolute or repo-relative, or an `artifact://<id>` locator) or a `locations` array compacted in order. Optional `query` focuses the digest and `compression_ratio` overrides the configured ratio.
 
-The tool reads each location, calls Morph Compact with the raw text, and returns the compacted result. It never writes to disk, overwrites inputs, saves artifacts, or mutates session history, and it does not compact the conversation.
+The tool reads each location, calls Morph Compact with the raw text, and returns the compacted result. Secret files (`.env` and `.env.*`, private keys, credential configs; case-sensitive basename match) are refused so their contents never reach the remote API. It never writes to disk, overwrites inputs, saves artifacts, or mutates session history, and it does not compact the conversation.
 
 Approval tier: `read`.
 

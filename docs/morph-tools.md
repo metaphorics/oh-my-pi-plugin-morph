@@ -59,7 +59,7 @@ Use `codebase_warpsearch` for the checked-out local repo.
 
 Use `fastcompact` to condense a specific file or artifact into shorter, query-focused text. It is for supplied locations, not the conversation transcript.
 
-- Pass a single `location` (a repo-relative file path or an `artifact://<id>` locator), or a `locations` array compacted in order.
+- Pass a single `location` (a file path or an `artifact://<id>` locator), or a `locations` array compacted in order. Absolute and out-of-tree paths are accepted; secret files (`.env` and `.env.*`, private keys, credential configs; case-sensitive basename match) are refused.
 - Use the optional `query` to focus the digest and `compression_ratio` to override the configured ratio.
 - It returns compacted text only and never writes to disk, overwrites inputs, saves artifacts, or mutates session history.
 - Reach for the `session_before_compact` hook, including automatic compaction and manual `/compact`, to compact conversation history; reach for `fastcompact` to compact supplied locations.

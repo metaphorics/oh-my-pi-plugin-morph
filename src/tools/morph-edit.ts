@@ -2,6 +2,7 @@ import type { ApplyEditInput, ApplyEditResult } from "@morphllm/morphsdk";
 import { countChanges, generateUdiff } from "@morphllm/morphsdk/tools/fastapply";
 import type { Static } from "@oh-my-pi/pi-ai/types";
 import { unlink } from "node:fs/promises";
+import { resolve } from "node:path";
 import type {
   AgentToolResult,
   AgentToolUpdateCallback,
@@ -19,7 +20,6 @@ import {
   detectMarkerLeakage,
   EXISTING_CODE_MARKER,
   normalizeCodeEditInput,
-  resolveFilepath,
 } from "../format.js";
 import { morph } from "../morph-clients.js";
 import { withToolNote } from "../routing.js";
@@ -80,7 +80,7 @@ export function makeMorphEdit(pi: ExtensionAPI) {
       try {
         const { target_filepath, instructions, code_edit } = params;
         const normalizedCodeEdit = normalizeCodeEditInput(code_edit);
-        const filepath = resolveFilepath(target_filepath, ctx.cwd);
+        const filepath = resolve(ctx.cwd, target_filepath);
 
         const apiKey = MORPH_API_KEY;
         if (!apiKey || !morph) {

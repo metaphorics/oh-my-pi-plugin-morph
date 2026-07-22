@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-21
+
+### Changed
+
+- `fast_edit` now resolves absolute, out-of-tree, and symlink-escaping target paths with no path denial; the write tool no longer rejects any target path.
+- `fastcompact` accepts absolute and `../` out-of-tree file locations instead of requiring repo-relative paths.
+
+### Added
+
+- `fastcompact` refuses secret files on a case-sensitive basename match (`.env` and `.env.*`, private keys and PKCS#12 stores, SSH private keys, credential dotfiles, `credentials[.json|.yaml|.yml]`) so their bytes are not sent to the Morph API. In-tree reads also check the real target name so a symlink cannot alias a secret, and in-tree symlink escapes remain blocked.
+
 ## [0.3.9] - 2026-07-11
 
 ### Added

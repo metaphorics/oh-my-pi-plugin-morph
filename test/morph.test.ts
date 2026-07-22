@@ -18,7 +18,7 @@ import {
   detectMarkerLeakage,
   formatWarpGrepResult,
   normalizeCodeEditInput,
-  resolveFilepath,
+  resolveReadPath,
 } from "../src/format.js";
 import {
   fetchGitHubRepoSuggestions,
@@ -418,16 +418,40 @@ describe("format helpers", () => {
     expect(out).toContain("&quot;");
   });
 
-  test("accepts in-root relative paths and rejects unsafe targets", () => {
-    expect(resolveFilepath("src/a.ts", "/repo")).toBe("/repo/src/a.ts");
-    expect(resolveFilepath("nested/dir/b.ts", "/repo")).toBe("/repo/nested/dir/b.ts");
-    expect(() => resolveFilepath("/tmp/a.ts", "/repo")).toThrow(/Unsafe target_filepath/);
-    expect(() => resolveFilepath("../escape.ts", "/repo")).toThrow(/Unsafe target_filepath/);
-    expect(() => resolveFilepath("../../etc/passwd", "/repo")).toThrow(/Unsafe target_filepath/);
+  test("resolveReadPath allows out-of-tree reads but refuses secret files", () => {
+    expect(resolveReadPath("src/a.ts", "/repo")).toBe("/repo/src/a.ts");
+    expect(resolveReadPath("/etc/hosts", "/repo")).toBe("/etc/hosts");
+    expect(resolveReadPath("../sibling.ts", "/repo")).toBe("/sibling.ts");
+    expect(resolveReadPath("src/.environment.ts", "/repo")).toBe("/repo/src/.environment.ts");
+    for (const secret of [
+      ".env",
+      ".env.production",
+      "config/.env.local",
+      "server.pem",
+      "server.key",
+      "store.p12",
+      "store.pfx",
+      "id_rsa",
+      "id_dsa",
+      "id_ecdsa",
+      "id_ed25519",
+      ".npmrc",
+      ".netrc",
+      ".pgpass",
+      ".htpasswd",
+      "credentials",
+      "credentials.json",
+      "credentials.yaml",
+      "credentials.yml",
+    ]) {
+      expect(() => resolveReadPath(secret, "/repo")).toThrow(/Refusing to read secret file/);
+    }
+    // Case-sensitivity is the pinned contract: variant casing passes through.
+    expect(resolveReadPath(".ENV", "/repo")).toBe("/repo/.ENV");
   });
 });
 
-describe("resolveFilepath symlink containment", () => {
+describe("resolveReadPath symlink containment", () => {
   test("rejects an in-workspace symlink whose target is outside the workspace root", async () => {
     await withTempDir(async (dir) => {
       const root = realpathSync(dir);
@@ -436,10 +460,19 @@ describe("resolveFilepath symlink containment", () => {
         const secret = join(outside, "secret.ts");
         writeFileSync(secret, "export const secret = 1;\n");
         symlinkSync(secret, join(root, "link.ts"));
-        expect(() => resolveFilepath("link.ts", root)).toThrow();
+        expect(() => resolveReadPath("link.ts", root)).toThrow();
       } finally {
         rmSync(outside, { recursive: true, force: true });
       }
+    });
+  });
+
+  test("rejects an in-workspace symlink aliasing a secret file", async () => {
+    await withTempDir(async (dir) => {
+      const root = realpathSync(dir);
+      writeFileSync(join(root, ".env"), "SECRET=1\n");
+      symlinkSync(join(root, ".env"), join(root, "public.txt"));
+      expect(() => resolveReadPath("public.txt", root)).toThrow(/Refusing to read secret file/);
     });
   });
 
@@ -449,7 +482,7 @@ describe("resolveFilepath symlink containment", () => {
       const outside = mkdtempSync(join(tmpdir(), "morph-outside-"));
       try {
         symlinkSync(outside, join(root, "linkdir"), "dir");
-        expect(() => resolveFilepath("linkdir/new.ts", root)).toThrow();
+        expect(() => resolveReadPath("linkdir/new.ts", root)).toThrow();
       } finally {
         rmSync(outside, { recursive: true, force: true });
       }
@@ -465,7 +498,7 @@ describe("resolveFilepath symlink containment", () => {
         const danglingTarget = join(outside, "ghost.ts");
         symlinkSync(danglingTarget, join(root, "dangling.ts"));
         expect(existsSync(danglingTarget)).toBe(false);
-        expect(() => resolveFilepath("dangling.ts", root)).toThrow();
+        expect(() => resolveReadPath("dangling.ts", root)).toThrow();
       } finally {
         rmSync(outside, { recursive: true, force: true });
       }
@@ -1023,25 +1056,50 @@ describe("fast_edit execute", () => {
     });
   });
 
-  test("rejects absolute and escaping target paths as errors", async () => {
+  test("accepts absolute and root-escaping target paths for edits", async () => {
     setMorphApiKey("sk-test");
     initMorphClients();
     await withTempDir(async (dir) => {
+      const work = join(dir, "work");
+      mkdirSync(work);
+      const absTarget = join(dir, "abs-created.ts");
       const absolute = await runTool(
         "fast_edit",
-        { target_filepath: "/etc/passwd", instructions: "x", code_edit: "const a = 1;" },
-        { cwd: dir },
+        { target_filepath: absTarget, instructions: "create", code_edit: "const a = 1;" },
+        { cwd: work },
       );
-      expect(absolute.isError).toBe(true);
-      expect(toolText(absolute)).toContain("Unsafe target_filepath");
+      expect(absolute.isError).toBeFalsy();
+      expect(existsSync(absTarget)).toBe(true);
 
       const escape = await runTool(
         "fast_edit",
-        { target_filepath: "../escape.ts", instructions: "x", code_edit: "const a = 1;" },
-        { cwd: dir },
+        { target_filepath: "../esc-created.ts", instructions: "create", code_edit: "const b = 2;" },
+        { cwd: work },
       );
-      expect(escape.isError).toBe(true);
-      expect(toolText(escape)).toContain("Unsafe target_filepath");
+      expect(escape.isError).toBeFalsy();
+      expect(existsSync(join(dir, "esc-created.ts"))).toBe(true);
+    });
+  });
+
+  test("writes through an in-workspace symlinked directory to an outside target", async () => {
+    setMorphApiKey("sk-test");
+    initMorphClients();
+    await withTempDir(async (dir) => {
+      const work = join(dir, "work");
+      mkdirSync(work);
+      const outside = mkdtempSync(join(tmpdir(), "morph-outside-"));
+      try {
+        symlinkSync(outside, join(work, "linkdir"), "dir");
+        const result = await runTool(
+          "fast_edit",
+          { target_filepath: "linkdir/new.ts", instructions: "create", code_edit: "const c = 3;" },
+          { cwd: work },
+        );
+        expect(result.isError).toBeFalsy();
+        expect(existsSync(join(outside, "new.ts"))).toBe(true);
+      } finally {
+        rmSync(outside, { recursive: true, force: true });
+      }
     });
   });
 
@@ -2230,20 +2288,17 @@ describe("fastcompact execute", () => {
     });
   });
 
-  test("rejects absolute paths, root escapes, directories, globs, and missing files with no Morph call", async () => {
+  test("rejects secret files, directories, globs, and missing files with no Morph call", async () => {
     setMorphApiKey("sk-test");
     initMorphClients();
     const calls = stubCompact(() => fakeResult("X"));
     await withTempDir(async (dir) => {
       mkdirSync(join(dir, "sub"));
+      writeFileSync(join(dir, ".env"), "SECRET=1\n");
 
-      const absolute = await runTool("fastcompact", { location: "/etc/passwd" }, { cwd: dir });
-      expect(absolute.isError).toBe(true);
-      expect(toolText(absolute)).toContain("absolute paths are not allowed");
-
-      const escape = await runTool("fastcompact", { location: "../escape.txt" }, { cwd: dir });
-      expect(escape.isError).toBe(true);
-      expect(toolText(escape)).toContain("escapes the workspace root");
+      const secret = await runTool("fastcompact", { location: ".env" }, { cwd: dir });
+      expect(secret.isError).toBe(true);
+      expect(toolText(secret)).toContain("secret file");
 
       const directory = await runTool("fastcompact", { location: "sub" }, { cwd: dir });
       expect(directory.isError).toBe(true);
@@ -2257,7 +2312,39 @@ describe("fastcompact execute", () => {
       expect(missing.isError).toBe(true);
       expect(toolText(missing)).toContain("not found");
 
+      const outside = mkdtempSync(join(tmpdir(), "morph-outside-"));
+      try {
+        writeFileSync(join(outside, "real.ts"), "x\n");
+        symlinkSync(join(outside, "real.ts"), join(dir, "link.ts"));
+        const link = await runTool("fastcompact", { location: "link.ts" }, { cwd: dir });
+        expect(link.isError).toBe(true);
+        expect(toolText(link)).toContain("symlink");
+      } finally {
+        rmSync(outside, { recursive: true, force: true });
+      }
+
       expect(calls).toHaveLength(0);
+    });
+  });
+
+  test("reads absolute and root-escaping paths for compaction", async () => {
+    setMorphApiKey("sk-test");
+    initMorphClients();
+    const calls = stubCompact(() => fakeResult("COMPACTED"));
+    await withTempDir(async (dir) => {
+      const work = join(dir, "work");
+      mkdirSync(work);
+      const absFile = join(dir, "abs.txt");
+      writeFileSync(absFile, "absolute body\n");
+
+      const absolute = await runTool("fastcompact", { location: absFile }, { cwd: work });
+      expect(absolute.isError).toBeFalsy();
+      expect(calls.at(-1)?.input).toBe("absolute body\n");
+
+      writeFileSync(join(dir, "esc.txt"), "escape body\n");
+      const escape = await runTool("fastcompact", { location: "../esc.txt" }, { cwd: work });
+      expect(escape.isError).toBeFalsy();
+      expect(calls.at(-1)?.input).toBe("escape body\n");
     });
   });
 

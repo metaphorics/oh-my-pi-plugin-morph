@@ -1,5 +1,6 @@
 import { lstatSync, realpathSync, type Stats } from "node:fs";
 import {
+  basename,
   isAbsolute,
   relative as relativePath,
   resolve as resolvePath,
@@ -77,32 +78,42 @@ function escapesRoot(root: string, target: string): boolean {
   return rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel);
 }
 
-export function resolveFilepath(targetFilepath: string, cwd: string): string {
-  if (isAbsolute(targetFilepath)) {
-    throw new Error(
-      `Unsafe target_filepath: absolute paths are not allowed (${targetFilepath}). Provide a path relative to the workspace root.`,
-    );
-  }
+// Basename-matched secret files a read-only tool must not egress to Morph.
+// A read ships the file's bytes to a remote API, so err broad: native `read`
+// still works on anything refused here. Case-sensitive per the pinned contract.
+const SECRET_FILE_PATTERNS: readonly RegExp[] = [
+  /^\.env(\..*)?$/, // .env, .env.local, .env.production, ...
+  /\.(pem|key|p12|pfx)$/, // private keys / PKCS#12 key stores
+  /^id_(rsa|dsa|ecdsa|ed25519)$/, // SSH private keys
+  /^\.(npmrc|netrc|pgpass|htpasswd)$/, // credential config dotfiles
+  /^credentials(\.(json|ya?ml))?$/, // credentials[.json|.yaml|.yml]
+];
 
+function isSecretFile(base: string): boolean {
+  return SECRET_FILE_PATTERNS.some((re) => re.test(base));
+}
+
+export function resolveReadPath(targetFilepath: string, cwd: string): string {
   const resolved = resolvePath(cwd, targetFilepath);
-  if (escapesRoot(cwd, resolved)) {
-    throw new Error(
-      `Unsafe target_filepath: resolved path escapes the workspace root (${targetFilepath}).`,
-    );
+  if (isSecretFile(basename(resolved))) {
+    throw new Error(`Refusing to read secret file: ${targetFilepath} (may contain credentials).`);
   }
 
-  // Symlink-aware containment: starting from the real workspace root, walk the
-  // target's components and resolve any symlink encountered. This rejects an
-  // in-workspace symlink pointing outside the tree — including a dangling
-  // symlink whose target does not yet exist — which a write would otherwise
-  // follow to create or truncate a file outside the workspace. When cwd itself
-  // does not exist on disk, the lexical check above already guarantees
-  // containment.
-  const realRoot = tryRealpath(cwd);
-  if (realRoot !== null && symlinkEscapesRoot(realRoot, cwd, resolved)) {
-    throw new Error(
-      `Unsafe target_filepath: resolved real path escapes the workspace root (${targetFilepath}).`,
-    );
+  // Absolute / ../ out-of-tree reads are allowed outright and skip symlink
+  // inspection entirely (pinned). For a path lexically inside the workspace,
+  // refuse a symlink that aliases a secret behind an innocent name
+  // (public.txt -> .env) or whose real target escapes the root.
+  if (!escapesRoot(cwd, resolved)) {
+    const real = tryRealpath(resolved);
+    if (real !== null && isSecretFile(basename(real))) {
+      throw new Error(`Refusing to read secret file: ${targetFilepath} (may contain credentials).`);
+    }
+    const realRoot = tryRealpath(cwd);
+    if (realRoot !== null && symlinkEscapesRoot(realRoot, cwd, resolved)) {
+      throw new Error(
+        `Refusing to read through a symlink escaping the workspace root: ${targetFilepath}.`,
+      );
+    }
   }
 
   return resolved;

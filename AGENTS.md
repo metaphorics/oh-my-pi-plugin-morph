@@ -26,7 +26,7 @@
 
 ## Verification gates
 
-- Rule: For code changes, run `bun run typecheck` and `bun test ./test`. There is no repo lint script in `package.json`.
+- Rule: For code changes, run `bun run build`, then `bun run typecheck` and `bun test ./test`. There is no repo lint script in `package.json`.
 - Why: These are the repo-native gates exposed by package scripts; inventing a lint command creates false process.
 
 - Rule: For markdown changes under `docs`, run `omp ttsr scan --json docs`. For root docs like `README.md` or `CHANGELOG.md`, use a repo-root scan filtered for `md-ai-formatting-tells` rather than trusting direct single-file scans.

@@ -38,7 +38,9 @@ For a one-off smoke test without installing:
 MORPH_API_KEY=sk-... omp -e ./src/index.ts -p "List the Morph tools you can call."
 ```
 
-The package manifest loads the extension from `omp.extensions: ["./src/index.ts"]`.
+The package manifest loads the prebuilt extension from `omp.extensions: ["./dist/index.js"]`.
+`prepack` runs while npm creates or publishes a tarball, so consumers install a tarball that already contains the built entry and its import sidecar.
+Local, git, and source installs must run `bun run build` before OMP loads the plugin so `dist/index.js` exists.
 Marketplace installs do not load manifest extension modules; use `omp plugin install` or `omp plugin link` for this package.
 
 ## Configuration
@@ -127,6 +129,7 @@ Registering these tools makes them available to the session, but each agent stil
 
 ```bash
 bun install
+bun run build
 bun run typecheck
 bun test ./test
 ```

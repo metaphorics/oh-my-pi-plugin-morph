@@ -3,9 +3,12 @@
   "version": "0.4.0",
   "description": "oh-my-pi extension for Morph Fast Apply and WarpGrep tools",
   "type": "module",
+  "files": [
+    "dist"
+  ],
   "omp": {
     "extensions": [
-      "./src/index.ts"
+      "./dist/index.js"
     ],
     "settings": {
       "apiKey": {

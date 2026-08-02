@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The package now ships a prebuilt extension entry (`dist/index.js`) plus a hash-bound import sidecar (`dist/index.js.omp-imports.json`) that lets hosts with sidecar support skip the graph-loading scan at startup. Hosts without sidecar support fall back to their existing graph loader, so the extension remains loadable everywhere.
+
 ## [0.4.0] - 2026-07-21
 
 ### Changed

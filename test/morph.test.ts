@@ -781,7 +781,7 @@ describe("compaction bridge", () => {
     expect(calls).toHaveLength(1);
   });
 
-  test("MORPH_COMPACT_CODEX_NATIVE=false keeps Morph on codex", async () => {
+  test("compactCodexNative: false keeps Morph on codex", async () => {
     try {
       applyMorphSettings({ apiKey: "sk-test", compactCodexNative: false });
       initMorphClients();

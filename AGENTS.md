@@ -19,6 +19,9 @@
 - Rule: The compaction bridge yields to native when `event.preparation.settings.remoteEnabled === false` (the `/compact soft` local-only path), and folds the inputs the native summarizer owns into the Morph request: `previousSummary` as a synthetic leading message and split-turn `turnPrefixMessages`.
 - Why: The host applies a hook-provided summary verbatim and keeps only entries from `firstKeptEntryId` onward, so a local-only request must not egress to Morph and previously summarized or split-turn-prefix history would otherwise be silently dropped.
 
+- Rule: On an unfocused compaction the bridge also yields when `ctx.model.provider === "openai-codex"` and `ctx.model.remoteCompaction.enabled !== false`, unless `compactCodexNative` / `MORPH_COMPACT_CODEX_NATIVE` is false. Do not narrow this to `strategy === "context-full"`.
+- Why: `shouldUseProviderNativeCompaction` reads only `remoteEnabled` and `remoteStreamingV2Enabled`, never `strategy`, so every host path that reaches the summarizer compacts a Codex session natively. `snapcompact` already yielded one branch earlier and `off` never fires the hook, so the remaining strategies — `context-full`, plus `handoff` and `shake` once they fall back — all land on the native path. A `context-full` guard would send those fallbacks to Morph instead.
+
 ## Extension lifecycle state
 
 - Rule: Session mutable state belongs inside `morphPlugin(pi)`, not module scope.

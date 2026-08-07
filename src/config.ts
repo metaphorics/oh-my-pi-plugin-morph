@@ -17,7 +17,7 @@ export const GITHUB_REPO_SUGGESTION_LIMIT = 5;
 
 export const EXISTING_CODE_MARKER = "// ... existing code ...";
 export const MORPH_ROUTING_HINT_HEADER = "Morph plugin routing hints:";
-export const PLUGIN_VERSION = "0.4.0";
+export const PLUGIN_VERSION = "0.5.0";
 
 export type MorphFastEditModel = "auto" | "morph-v3-fast" | "morph-v3-large";
 export const DEFAULT_MORPH_FAST_EDIT_MODEL: MorphFastEditModel = "auto";
@@ -32,6 +32,10 @@ export let MORPH_WARPGREP_GITHUB_ENABLED = booleanFrom(
   false,
 );
 export let MORPH_COMPACT_ENABLED = booleanFrom(process.env.MORPH_COMPACT, true);
+export let MORPH_COMPACT_CODEX_NATIVE = booleanFrom(
+  process.env.MORPH_COMPACT_CODEX_NATIVE,
+  true,
+);
 export let MORPH_FASTCOMPACT_ENABLED = booleanFrom(process.env.MORPH_FASTCOMPACT, true);
 export let MORPH_ROUTING_HINT_ENABLED = booleanFrom(
   process.env.MORPH_ROUTING_HINT,
@@ -61,6 +65,12 @@ export function applyMorphSettings(settings: Record<string, unknown> = {}): void
     false,
   );
   MORPH_COMPACT_ENABLED = booleanSetting(settings, "compactEnabled", "MORPH_COMPACT", true);
+  MORPH_COMPACT_CODEX_NATIVE = booleanSetting(
+    settings,
+    "compactCodexNative",
+    "MORPH_COMPACT_CODEX_NATIVE",
+    true,
+  );
   MORPH_FASTCOMPACT_ENABLED = booleanSetting(
     settings,
     "fastcompactEnabled",

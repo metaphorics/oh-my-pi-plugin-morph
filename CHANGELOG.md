@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-08-07
+
+### Changed
+
+- Morph no longer intercepts session compaction on OpenAI Codex sessions: it yields so omp compacts instead. With omp's `context-full` strategy that hands compaction to the provider's own remote compaction, so the transcript never leaves for Morph and the encrypted native history the backend replays stays intact. A focused `/compact <focus>` still runs through Morph, and the new `compactCodexNative` setting (`MORPH_COMPACT_CODEX_NATIVE=false`) restores Morph compaction on Codex.
+
 ## [0.4.0] - 2026-07-21
 
 ### Changed

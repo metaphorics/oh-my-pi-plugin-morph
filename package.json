@@ -1,6 +1,6 @@
 {
   "name": "oh-my-pi-plugin-morph",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "oh-my-pi extension for Morph Fast Apply and WarpGrep tools",
   "type": "module",
   "omp": {
@@ -48,6 +48,13 @@
         "label": "Enable session compaction",
         "description": "Use Morph for session compaction.",
         "env": "MORPH_COMPACT",
+        "default": true
+      },
+      "compactCodexNative": {
+        "type": "boolean",
+        "label": "Yield to Codex native compaction",
+        "description": "On OpenAI Codex sessions, let the provider's own remote compaction run instead of Morph. A focused /compact still uses Morph.",
+        "env": "MORPH_COMPACT_CODEX_NATIVE",
         "default": true
       },
       "fastcompactEnabled": {

@@ -61,6 +61,7 @@ omp plugin config set oh-my-pi-plugin-morph warpgrepGithubEnabled true
 | `warpgrepEnabled` | `MORPH_WARPGREP` | `false` | Set `true` to enable local WarpGrep. |
 | `warpgrepGithubEnabled` | `MORPH_WARPGREP_GITHUB` | `false` | Set `true` to enable public GitHub search. |
 | `compactEnabled` | `MORPH_COMPACT` | `true` | Set `false` to disable the compaction hook. |
+| `compactCodexNative` | `MORPH_COMPACT_CODEX_NATIVE` | `true` | Set `false` to use Morph for compaction on OpenAI Codex sessions instead of yielding to the provider's own remote compaction. |
 | `fastcompactEnabled` | `MORPH_FASTCOMPACT` | `true` | Set `false` to disable the `fastcompact` tool. |
 | `routingHintEnabled` | `MORPH_ROUTING_HINT` | `true` | Set `false` to skip per-turn tool-selection system hints. |
 | `compactRatio` | `MORPH_COMPACT_RATIO` | `0.2` | Target fraction to keep for Morph compaction. Valid range: `0.05` to `1`. |
@@ -103,10 +104,11 @@ Approval tier: `read`.
 This extension hooks omp's `session_before_compact` event. Morph Compact handles automatic compaction and manual `/compact` by default when `MORPH_COMPACT` is enabled and Morph is configured.
 
 - If the resolved omp strategy is `snapcompact` and no focus text is present, Morph yields so the host keeps image-archive compaction.
-- For non-snapcompact strategies and focused compactions, Morph compacts the selected history and returns the hook result to omp.
+- On OpenAI Codex sessions with no focus text, Morph yields and omp compacts instead. This does not depend on the strategy: omp decides provider-native compaction from the model and its remote settings, never from the strategy, so `context-full` reaches it directly and a `handoff` or `shake` run reaches it once that run falls back to the summarizer. The backend then compacts server-side, the transcript is never sent to Morph, and the encrypted native history the backend replays into later turns is preserved. Set `MORPH_COMPACT_CODEX_NATIVE=false` to keep using Morph on Codex.
+- For non-snapcompact strategies on every other provider, and for focused compactions, Morph compacts the selected history and returns the hook result to omp.
 - `/compact <focus text>` forwards the focus text to Morph as the compaction query.
 
-When Morph runs, the serialized selected history and any focus text are sent to Morph's API. Leave `MORPH_API_KEY` unset, disable the compaction hook (`compactEnabled` setting or `MORPH_COMPACT=false`), or use unfocused `snapcompact` when transcript egress is not acceptable.
+When Morph runs, the serialized selected history and any focus text are sent to Morph's API. Leave `MORPH_API_KEY` unset, disable the compaction hook (`compactEnabled` setting or `MORPH_COMPACT=false`), use unfocused `snapcompact`, or run on an OpenAI Codex model, where Morph yields by default, when transcript egress is not acceptable.
 
 If Morph is unavailable, the selected history is empty, serialization produces no input, Morph returns an empty summary, or the API errors, the handler returns `undefined` so omp runs its configured native strategy.
 

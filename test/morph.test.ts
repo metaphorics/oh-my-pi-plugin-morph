@@ -716,6 +716,122 @@ describe("compaction bridge", () => {
     expect(calls).toHaveLength(0);
   });
 
+  test("codex sessions yield compaction to the host", async () => {
+    setMorphApiKey("sk-test");
+    initMorphClients();
+    const client = requireCompactClient();
+    const calls: unknown[] = [];
+    client.compact = async (input) => {
+      calls.push(input);
+      return morphResult("SUMMARY");
+    };
+    const { pi } = fakePi();
+    const codexCtx = { hasUI: false, model: { provider: "openai-codex", id: "gpt-5.5" } };
+    const handler = makeBeforeCompact(pi);
+
+    await expect(
+      handler(compactEvent([textMsg("user", "hi")], undefined, "context-full"), codexCtx as never),
+    ).resolves.toBeUndefined();
+    expect(calls).toHaveLength(0);
+  });
+
+  // The yield deliberately does not read `strategy`: omp's
+  // shouldUseProviderNativeCompaction ignores it, so a handoff or shake run that
+  // falls back to the summarizer still compacts a Codex session natively.
+  // Narrowing this branch to `context-full` would send those fallbacks to Morph.
+  for (const strategy of ["handoff", "shake"] as const) {
+    test(`codex sessions yield compaction to the host on ${strategy}`, async () => {
+      setMorphApiKey("sk-test");
+      initMorphClients();
+      const client = requireCompactClient();
+      const calls: unknown[] = [];
+      client.compact = async (input) => {
+        calls.push(input);
+        return morphResult("SUMMARY");
+      };
+      const { pi } = fakePi();
+      const codexCtx = { hasUI: false, model: { provider: "openai-codex", id: "gpt-5.5" } };
+      const handler = makeBeforeCompact(pi);
+
+      await expect(
+        handler(compactEvent([textMsg("user", "hi")], undefined, strategy), codexCtx as never),
+      ).resolves.toBeUndefined();
+      expect(calls).toHaveLength(0);
+    });
+  }
+
+  test("focused compaction still runs Morph on codex", async () => {
+    setMorphApiKey("sk-test");
+    initMorphClients();
+    const client = requireCompactClient();
+    const calls: Array<{ query?: string }> = [];
+    client.compact = async (input) => {
+      calls.push(input);
+      return morphResult("SUMMARY");
+    };
+    const { pi } = fakePi();
+    const codexCtx = { hasUI: false, model: { provider: "openai-codex", id: "gpt-5.5" } };
+    const handler = makeBeforeCompact(pi);
+
+    await expect(
+      handler(compactEvent([textMsg("user", "hi")], "focus on auth"), codexCtx as never),
+    ).resolves.toEqual({
+      compaction: { summary: "SUMMARY", firstKeptEntryId: "e1", tokensBefore: 1234 },
+    });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.query).toBe("focus on auth");
+  });
+
+  test("a codex model with provider-native compaction disabled still runs Morph", async () => {
+    setMorphApiKey("sk-test");
+    initMorphClients();
+    const client = requireCompactClient();
+    const calls: unknown[] = [];
+    client.compact = async (input) => {
+      calls.push(input);
+      return morphResult("SUMMARY");
+    };
+    const { pi } = fakePi();
+    const codexCtx = {
+      hasUI: false,
+      model: { provider: "openai-codex", id: "gpt-5.5", remoteCompaction: { enabled: false } },
+    };
+    const handler = makeBeforeCompact(pi);
+
+    await expect(
+      handler(compactEvent([textMsg("user", "hi")], undefined, "context-full"), codexCtx as never),
+    ).resolves.toEqual({
+      compaction: { summary: "SUMMARY", firstKeptEntryId: "e1", tokensBefore: 1234 },
+    });
+    expect(calls).toHaveLength(1);
+  });
+
+  test("compactCodexNative: false keeps Morph on codex", async () => {
+    try {
+      applyMorphSettings({ apiKey: "sk-test", compactCodexNative: false });
+      initMorphClients();
+      const client = requireCompactClient();
+      const calls: unknown[] = [];
+      client.compact = async (input) => {
+        calls.push(input);
+        return morphResult("SUMMARY");
+      };
+      const { pi } = fakePi();
+      const codexCtx = { hasUI: false, model: { provider: "openai-codex", id: "gpt-5.5" } };
+      const handler = makeBeforeCompact(pi);
+
+      await expect(
+        handler(compactEvent([textMsg("user", "hi")], undefined, "context-full"), codexCtx as never),
+      ).resolves.toEqual({
+        compaction: { summary: "SUMMARY", firstKeptEntryId: "e1", tokensBefore: 1234 },
+      });
+      expect(calls).toHaveLength(1);
+    } finally {
+      applyMorphSettings({});
+      setMorphApiKey(undefined);
+    }
+  });
+
   test("focused snapcompact compaction runs Morph with the focus query", async () => {
     setMorphApiKey("sk-test");
     initMorphClients();

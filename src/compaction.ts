@@ -7,7 +7,7 @@ import type {
   SessionBeforeCompactResult,
 } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/types";
 import { throwIfAborted } from "@oh-my-pi/pi-coding-agent/tools/tool-errors";
-import { COMPACT_RATIO, MORPH_COMPACT_TIMEOUT } from "./config.js";
+import { COMPACT_RATIO, MORPH_COMPACT_CODEX_NATIVE, MORPH_COMPACT_TIMEOUT } from "./config.js";
 import { compactClient, morphReady } from "./morph-clients.js";
 import { raceAbort } from "./abort.js";
 import { nextMorphRetryDelay, transientMorphFailureMessage, waitForMorphRetry } from "./retry.js";
@@ -170,6 +170,8 @@ export function textToolResult(text: string, isError = false): AgentToolResult {
   return { content: [{ type: "text", text }], isError: isError || undefined };
 }
 
+const CODEX_PROVIDER = "openai-codex";
+
 export function makeBeforeCompact(pi: ExtensionAPI, handlerBudgetMs = 28_000) {
   return async function beforeCompact(
     event: SessionBeforeCompactEvent,
@@ -192,6 +194,22 @@ export function makeBeforeCompact(pi: ExtensionAPI, handlerBudgetMs = 28_000) {
     // snapcompact is a host-owned, non-LLM strategy (image archive). Yield when
     // no focus is present so the host keeps it; focused compactions use Morph.
     if (!focus && prep.settings.strategy === "snapcompact") return undefined;
+
+    // Codex compacts server-side and replays its own encrypted history, so
+    // yielding costs no extra tokens and keeps that replay intact. Reached only
+    // for non-snapcompact compactions (the branch above already took those), so
+    // the host lands on its summarizer path, which routes Codex to provider-native
+    // remote compaction. A focused `/compact <focus>` still goes to Morph — the
+    // native path takes no query. A model that opted out of provider-native
+    // compaction has no such path, so Morph still wins there.
+    if (
+      !focus &&
+      MORPH_COMPACT_CODEX_NATIVE &&
+      ctx.model?.provider === CODEX_PROVIDER &&
+      ctx.model.remoteCompaction?.enabled !== false
+    ) {
+      return undefined;
+    }
 
     // The host applies a hook-provided summary verbatim and keeps only entries
     // from firstKeptEntryId onward, so anything the native summarizer would fold

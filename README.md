@@ -104,8 +104,8 @@ Approval tier: `read`.
 This extension hooks omp's `session_before_compact` event. Morph Compact handles automatic compaction and manual `/compact` by default when `MORPH_COMPACT` is enabled and Morph is configured.
 
 - If the resolved omp strategy is `snapcompact` and no focus text is present, Morph yields so the host keeps image-archive compaction.
-- On OpenAI Codex sessions with no focus text, Morph yields and omp compacts instead. When omp is configured for `context-full` compaction that means the provider's own remote compaction runs: the backend compacts server-side, the transcript is never sent to Morph, and the encrypted native history the backend replays into later turns is preserved. Set `MORPH_COMPACT_CODEX_NATIVE=false` to keep using Morph on Codex.
-- For non-snapcompact strategies and focused compactions, Morph compacts the selected history and returns the hook result to omp.
+- On OpenAI Codex sessions with no focus text, Morph yields and omp compacts instead. This does not depend on the strategy: omp decides provider-native compaction from the model and its remote settings, never from the strategy, so `context-full` reaches it directly and a `handoff` or `shake` run reaches it once that run falls back to the summarizer. The backend then compacts server-side, the transcript is never sent to Morph, and the encrypted native history the backend replays into later turns is preserved. Set `MORPH_COMPACT_CODEX_NATIVE=false` to keep using Morph on Codex.
+- For non-snapcompact strategies on every other provider, and for focused compactions, Morph compacts the selected history and returns the hook result to omp.
 - `/compact <focus text>` forwards the focus text to Morph as the compaction query.
 
 When Morph runs, the serialized selected history and any focus text are sent to Morph's API. Leave `MORPH_API_KEY` unset, disable the compaction hook (`compactEnabled` setting or `MORPH_COMPACT=false`), use unfocused `snapcompact`, or run on an OpenAI Codex model, where Morph yields by default, when transcript egress is not acceptable.

@@ -735,6 +735,31 @@ describe("compaction bridge", () => {
     expect(calls).toHaveLength(0);
   });
 
+  // The yield deliberately does not read `strategy`: omp's
+  // shouldUseProviderNativeCompaction ignores it, so a handoff or shake run that
+  // falls back to the summarizer still compacts a Codex session natively.
+  // Narrowing this branch to `context-full` would send those fallbacks to Morph.
+  for (const strategy of ["handoff", "shake"] as const) {
+    test(`codex sessions yield compaction to the host on ${strategy}`, async () => {
+      setMorphApiKey("sk-test");
+      initMorphClients();
+      const client = requireCompactClient();
+      const calls: unknown[] = [];
+      client.compact = async (input) => {
+        calls.push(input);
+        return morphResult("SUMMARY");
+      };
+      const { pi } = fakePi();
+      const codexCtx = { hasUI: false, model: { provider: "openai-codex", id: "gpt-5.5" } };
+      const handler = makeBeforeCompact(pi);
+
+      await expect(
+        handler(compactEvent([textMsg("user", "hi")], undefined, strategy), codexCtx as never),
+      ).resolves.toBeUndefined();
+      expect(calls).toHaveLength(0);
+    });
+  }
+
   test("focused compaction still runs Morph on codex", async () => {
     setMorphApiKey("sk-test");
     initMorphClients();
